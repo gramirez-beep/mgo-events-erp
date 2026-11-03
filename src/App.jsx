@@ -84,51 +84,11 @@ const ROLE_RIGHTS_DESCRIPTION = {
 };
 
 const INITIAL_USERS = [
-  {
-    id: 'u1',
-    nombre: 'Pepe',
-    cargo: 'Project Manager Operativo',
-    email: 'pepe@mgoevents.com',
-    password: 'MGO2026!',
-    rol: 'PROJECT_MANAGER',
-    activo: true
-  },
-  {
-    id: 'u2',
-    nombre: 'Manu',
-    cargo: 'Director de Operaciones',
-    email: 'manu@mgoevents.com',
-    password: 'MGO2026!',
-    rol: 'DIRECTOR',
-    activo: true
-  },
-  {
-    id: 'u3',
-    nombre: 'Clarisa',
-    cargo: 'Directora General',
-    email: 'clarisa@mgoevents.com',
-    password: 'MGO2026!',
-    rol: 'DIRECTOR_GENERAL',
-    activo: true
-  },
-  {
-    id: 'u4',
-    nombre: 'Presidente MGO',
-    cargo: 'Presidente del Consejo',
-    email: 'presidente@mgoevents.com',
-    password: 'MGO2026!',
-    rol: 'PRESIDENTE',
-    activo: true
-  },
-  {
-    id: 'u5',
-    nombre: 'Carlos',
-    cargo: 'Project Manager Vuelos y Sedes',
-    email: 'carlos@mgoevents.com',
-    password: 'MGO2026!',
-    rol: 'PROJECT_MANAGER',
-    activo: true
-  }
+  { id: 'u1', nombre: 'Pepe', cargo: 'Project Manager Operativo', email: 'pepe@mgoevents.com', password: 'MGO2026!', rol: 'PROJECT_MANAGER', activo: true },
+  { id: 'u2', nombre: 'Manu', cargo: 'Director de Operaciones', email: 'manu@mgoevents.com', password: 'MGO2026!', rol: 'DIRECTOR', activo: true },
+  { id: 'u3', nombre: 'Clarisa', cargo: 'Directora General', email: 'clarisa@mgoevents.com', password: 'MGO2026!', rol: 'DIRECTOR_GENERAL', activo: true },
+  { id: 'u4', nombre: 'Presidente MGO', cargo: 'Presidente del Consejo', email: 'presidente@mgoevents.com', password: 'MGO2026!', rol: 'PRESIDENTE', activo: true },
+  { id: 'u5', nombre: 'Carlos', cargo: 'Project Manager Vuelos y Sedes', email: 'carlos@mgoevents.com', password: 'MGO2026!', rol: 'PROJECT_MANAGER', activo: true }
 ];
 
 const INITIAL_ACCOUNTS = [
@@ -220,9 +180,6 @@ const formatCurrency = (val, currency = 'MXN') =>
   new Intl.NumberFormat('es-MX', { style: 'currency', currency, minimumFractionDigits: 2 }).format(Number(val) || 0);
 
 export default function App() {
-  // ==========================================================================
-  // ESTADOS DE AUTENTICACIÓN, FLUJO POST-LOGIN Y BASE DE DATOS
-  // ==========================================================================
   const [loggedInUser, setLoggedInUser] = useState(null);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
@@ -255,7 +212,6 @@ export default function App() {
   const [deleteUserModal, setDeleteUserModal] = useState(null);
   const [cloudStatus, setCloudStatus] = useState('connecting');
 
-  // Sincronización con Firebase Firestore (Eventos, Usuarios y Cuentas/Tarjetas)
   useEffect(() => {
     if (!auth || !db) {
       setCloudStatus('local');
@@ -343,9 +299,6 @@ export default function App() {
     }
   };
 
-  // ==========================================================================
-  // PERMISOS CALCULADOS SEGÚN EL ROL DEL USUARIO LOGUEADO
-  // ==========================================================================
   const permissions = useMemo(() => {
     if (!loggedInUser) return {};
     const rol = loggedInUser.rol;
@@ -354,7 +307,6 @@ export default function App() {
       canFirstSign: ['DIRECTOR', 'DIRECTOR_GENERAL', 'PRESIDENTE'].includes(rol),
       canSecondSign: ['DIRECTOR_GENERAL', 'PRESIDENTE'].includes(rol),
       canDeleteEvent: ['DIRECTOR_GENERAL', 'PRESIDENTE'].includes(rol),
-      // 5ta Pestaña: Cuentas de Banco y Tarjetas (Solo Dirección General y Presidente)
       canManageBankAccounts: ['DIRECTOR_GENERAL', 'PRESIDENTE'].includes(rol),
       canPresidentSign: rol === 'PRESIDENTE',
       canViewExecutiveSummary: rol === 'PRESIDENTE',
@@ -367,9 +319,6 @@ export default function App() {
     setTimeout(() => setNotification(null), 5000);
   };
 
-  // ==========================================================================
-  // LÓGICA DE LOGIN CON VALIDACIÓN ESTRICTA @mgoevents.com
-  // ==========================================================================
   const handleLogin = (e) => {
     e.preventDefault();
     setLoginError('');
@@ -402,9 +351,6 @@ export default function App() {
     setSelectedEventId(null);
   };
 
-  // ==========================================================================
-  // ACCIONES DE LA PANTALLA POST-LOGIN (2 OPCIONES ESTÉTICAS)
-  // ==========================================================================
   const handleStartNewEventFromZero = () => {
     setSelectedEventId(null);
     setCreationSessionMode('NEW_BLANK');
@@ -442,9 +388,6 @@ export default function App() {
     [events, selectedEventId]
   );
 
-  // ==========================================================================
-  // ELIMINACIÓN DE EVENTOS (SOLO DIRECTOR GENERAL Y PRESIDENTE)
-  // ==========================================================================
   const handleConfirmDeleteEvent = async () => {
     if (!deleteConfirmModal || !permissions.canDeleteEvent) return;
     if (events.length <= 1) {
@@ -471,9 +414,6 @@ export default function App() {
     setDeleteConfirmModal(null);
   };
 
-  // ==========================================================================
-  // CAMBIAR CONTRASEÑA Y ELIMINAR USUARIOS (EXCLUSIVO PRESIDENTE)
-  // ==========================================================================
   const handleSaveNewPassword = async (e) => {
     e.preventDefault();
     if (!passwordModalUser || !permissions.canManageUsers) return;
@@ -519,9 +459,6 @@ export default function App() {
     setDeleteUserModal(null);
   };
 
-  // ==========================================================================
-  // CÁLCULOS FINANCIEROS EN TIEMPO REAL DEL EVENTO ACTIVO
-  // ==========================================================================
   const financialMetrics = useMemo(() => {
     if (!selectedEvent) {
       return {
@@ -580,9 +517,6 @@ export default function App() {
     };
   }, [selectedEvent]);
 
-  // ==========================================================================
-  // ESTADOS MÓDULO 1: CREACIÓN DE EVENTO (DESDE CERO SIN PREESTABLECIDOS)
-  // ==========================================================================
   const [newEvtName, setNewEvtName] = useState('');
   const [newEvtClient, setNewEvtClient] = useState('');
   const [newEvtStart, setNewEvtStart] = useState('2026-11-15');
@@ -680,9 +614,6 @@ export default function App() {
     showToast('success', 'Presupuesto Actualizado', `Rubro "${newRubroName}" agregado con ${formatCurrency(monto)}.`);
   };
 
-  // ==========================================================================
-  // ESTADOS MÓDULO 2: GASTOS Y AUTORIZACIONES POR ROL
-  // ==========================================================================
   const [gastoCiudad, setGastoCiudad] = useState('');
   const [gastoHotel, setGastoHotel] = useState('');
   const [gastoCategoria, setGastoCategoria] = useState('');
@@ -822,9 +753,6 @@ export default function App() {
     await syncEventToCloud({ ...selectedEvent, gastos: updatedGastos });
   };
 
-  // ==========================================================================
-  // ESTADOS MÓDULO 4: ALTA DE USUARIOS (SIN ASIGNAR CUENTA BANCARIA)
-  // ==========================================================================
   const [uNombre, setUNombre] = useState('');
   const [uCargo, setUCargo] = useState('');
   const [uEmail, setUEmail] = useState('');
@@ -872,9 +800,6 @@ export default function App() {
     showToast('success', 'Usuario Creado por Presidencia', `${nuevo.nombre} (${nuevo.email}) dado de alta con acceso a todas las cuentas corporativas.`);
   };
 
-  // ==========================================================================
-  // ESTADOS MÓDULO 5: ALTA DE CUENTAS DE BANCO O TARJETAS (DIR. GENERAL Y PRESIDENTE)
-  // ==========================================================================
   const [accNombre, setAccNombre] = useState('');
   const [accBancoEmisor, setAccBancoEmisor] = useState('');
   const [accTipoCuenta, setAccTipoCuenta] = useState('Cheques');
@@ -929,9 +854,6 @@ export default function App() {
     showToast('success', 'Cuenta Eliminada', `Se eliminó "${acc.nombre}" del catálogo.`);
   };
 
-  // ==========================================================================
-  // EXPORTAR ACTA DE CIERRE A EXCEL (CSV)
-  // ==========================================================================
   const handleExportExcel = () => {
     if (!selectedEvent || !financialMetrics) return;
     const rows = [
@@ -962,9 +884,6 @@ export default function App() {
     document.body.removeChild(link);
   };
 
-  // ==========================================================================
-  // VISTA 1: LANDING PAGE DE LOGIN OBLIGATORIO (@mgoevents.com)
-  // ==========================================================================
   if (!loggedInUser) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col justify-between relative overflow-hidden font-sans">
@@ -1045,9 +964,6 @@ export default function App() {
     );
   }
 
-  // ==========================================================================
-  // VISTA 2: PANTALLA ESTÉTICA POST-LOGIN CON LAS 2 GRANDES OPCIONES
-  // ==========================================================================
   if (navigationStage === 'HUB') {
     const roleActionsList = {
       PROJECT_MANAGER: [
@@ -1075,7 +991,6 @@ export default function App() {
       <div className="min-h-screen bg-slate-950 text-white flex flex-col justify-between font-sans">
         <div className="h-2 w-full bg-gradient-to-r from-[#0D4F8B] via-[#118A96] via-[#9B1B60] via-[#EE2743] via-[#F37338] to-[#F5D34B]" />
 
-        {/* Barra superior de bienvenida */}
         <div className="max-w-6xl w-full mx-auto px-6 pt-6 flex flex-wrap items-center justify-between gap-4">
           <div className="bg-white px-4 py-2.5 rounded-2xl shadow-md">
             <MGOLogo />
@@ -1103,7 +1018,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* Contenedor central con las 2 grandes opciones estéticas */}
         <div className="max-w-6xl w-full mx-auto px-6 py-10 flex-1 flex flex-col justify-center">
           <div className="text-center max-w-2xl mx-auto mb-10">
             <span className="text-xs font-black uppercase tracking-widest text-[#F5D34B] bg-white/10 px-3.5 py-1 rounded-full">
@@ -1118,7 +1032,6 @@ export default function App() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 items-stretch">
-            {/* TARJETA 1: CREAR EVENTO NUEVO (DESDE CERO) */}
             <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-[#0D4F8B]/40 border-2 border-[#118A96]/60 hover:border-[#F5D34B] rounded-3xl p-8 flex flex-col justify-between shadow-2xl transition-all group">
               <div>
                 <div className="flex items-center justify-between">
@@ -1161,7 +1074,6 @@ export default function App() {
               </button>
             </div>
 
-            {/* TARJETA 2: TRABAJAR EN UN EVENTO EXISTENTE (SEGÚN ROL) */}
             <div className="bg-gradient-to-br from-slate-900 via-slate-900 to-[#9B1B60]/30 border-2 border-white/15 hover:border-[#F37338] rounded-3xl p-8 flex flex-col justify-between shadow-2xl transition-all">
               <div>
                 <div className="flex items-center justify-between">
@@ -1180,7 +1092,6 @@ export default function App() {
                   Selecciona un evento en curso y accede directamente a las funciones habilitadas para tu nivel de autorización:
                 </p>
 
-                {/* Selector del Evento Existente */}
                 <div className="mt-5">
                   <label className="text-[11px] font-bold uppercase tracking-wider text-[#F5D34B]">
                     Seleccionar Evento Activo en Base de Datos:
@@ -1198,7 +1109,6 @@ export default function App() {
                   </select>
                 </div>
 
-                {/* Botones de Acción Directa según el tipo de usuario */}
                 <div className="mt-5 space-y-2">
                   <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
                     Acciones disponibles para {ROLE_LABELS[loggedInUser.rol]}:
@@ -1247,9 +1157,6 @@ export default function App() {
     );
   }
 
-  // ==========================================================================
-  // MÓDULOS VISIBLES EN EL WORKSPACE SEGÚN EL ROL DEL USUARIO LOGUEADO
-  // ==========================================================================
   const availableTabs = [
     {
       id: 'CREACION_EVENTO',
@@ -1303,7 +1210,6 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans pb-16">
-      {/* NOTIFICACIÓN FLOTANTE */}
       {notification && (
         <div className={`fixed bottom-5 right-5 z-50 max-w-md p-4 rounded-xl shadow-2xl border flex items-start gap-3 ${
           notification.type === 'error' ? 'bg-red-950 text-white border-red-700' : 'bg-slate-900 text-white border-teal-500'
@@ -1316,7 +1222,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL PARA CAMBIAR CONTRASEÑA DE UN USUARIO (EXCLUSIVO PRESIDENTE) */}
       {passwordModalUser && (
         <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full overflow-hidden shadow-2xl border border-slate-200 p-6 space-y-4">
@@ -1362,7 +1267,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL PARA ELIMINAR USUARIO (EXCLUSIVO PRESIDENTE) */}
       {deleteUserModal && (
         <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full overflow-hidden shadow-2xl border border-red-300 p-6 space-y-4">
@@ -1394,7 +1298,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL DE CONFIRMACIÓN PARA ELIMINAR EVENTO (DIRECTOR GENERAL / PRESIDENTE) */}
       {deleteConfirmModal && (
         <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full overflow-hidden shadow-2xl border border-red-300 p-6 space-y-4">
@@ -1426,7 +1329,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL DE BLOQUEO ESTRICTO DE PRESUPUESTO */}
       {blockedModal && (
         <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl border-2 border-red-600">
@@ -1472,7 +1374,6 @@ export default function App() {
         </div>
       )}
 
-      {/* BARRA SUPERIOR DE SESIÓN ACTIVA Y REGRESO AL MENÚ PRINCIPAL */}
       <div className="bg-[#0D4F8B] text-white text-xs py-2 px-4 border-b border-white/10">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -1509,7 +1410,6 @@ export default function App() {
         </div>
       </div>
 
-      {/* HEADER CORPORATIVO CON LOGOTIPO OFICIAL MGO Y SELECTOR DE EVENTO */}
       <header className="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
         <div className="h-1.5 w-full bg-gradient-to-r from-[#0D4F8B] via-[#118A96] via-[#9B1B60] via-[#EE2743] via-[#F37338] to-[#F5D34B]" />
         <div className="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-4">
@@ -1568,7 +1468,6 @@ export default function App() {
           </div>
         </div>
 
-        {/* NAVEGACIÓN FILTRADA POR LOS PERMISOS DEL ROL */}
         <div className="max-w-7xl mx-auto px-4 flex overflow-x-auto border-t border-slate-100">
           {availableTabs.map((tab) => {
             const Icon = tab.icon;
@@ -1606,9 +1505,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* CONTENIDO PRINCIPAL */}
       <main className="max-w-7xl mx-auto px-4 pt-6 space-y-6">
-        {/* BANNER EJECUTIVO DEL EVENTO */}
         {selectedEvent ? (
           <div className="bg-gradient-to-r from-[#0D4F8B] via-[#118A96] to-[#0D4F8B] rounded-2xl p-5 text-white shadow-lg flex flex-wrap items-center justify-between gap-4">
             <div>
@@ -1671,13 +1568,9 @@ export default function App() {
           </div>
         )}
 
-        {/* =====================================================================
-            MÓDULO 1: CREACIÓN DE EVENTO (CON CANDADOS SECUENCIALES 1A -> 1B y 1C)
-        ===================================================================== */}
         {activeModule === 'CREACION_EVENTO' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* 1A: DAR DE ALTA UN NUEVO EVENTO */}
               <div className="bg-white rounded-2xl border-2 border-[#0D4F8B] shadow-sm p-5 relative">
                 <div className="flex items-center justify-between mb-1">
                   <div className="flex items-center gap-2 text-[#0D4F8B] font-black text-base">
@@ -1785,7 +1678,6 @@ export default function App() {
                 </form>
               </div>
 
-              {/* 1B: CIUDADES Y HOTELES */}
               <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm p-5 relative transition ${
                 isStep1BAnd1CLocked ? 'opacity-50 pointer-events-none select-none' : ''
               }`}>
@@ -1895,7 +1787,6 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 1C: RUBROS DE PRESUPUESTO */}
               <div className={`bg-white rounded-2xl border border-slate-200 shadow-sm p-5 relative transition ${
                 isStep1BAnd1CLocked ? 'opacity-50 pointer-events-none select-none' : ''
               }`}>
@@ -1981,7 +1872,6 @@ export default function App() {
               </div>
             </div>
 
-            {/* TABLA DE RUBROS CARGADOS AL EVENTO */}
             {selectedEvent && (
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                 <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
@@ -2028,13 +1918,9 @@ export default function App() {
           </div>
         )}
 
-        {/* =====================================================================
-            MÓDULO 2: GASTOS Y AUTORIZACIONES SEGÚN ROL
-        ===================================================================== */}
         {activeModule === 'GASTOS_AUTORIZACION' && selectedEvent && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              {/* FORMULARIO DE SOLICITUD DE PAGO */}
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2 text-[#9B1B60] font-black text-base">
@@ -2171,7 +2057,6 @@ export default function App() {
                 </form>
               </div>
 
-              {/* TABLA DE AUTORIZACIONES SEGÚN EL ROL LOGUEADO */}
               <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
                 <div className="p-4 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-2">
                   <div>
@@ -2226,7 +2111,6 @@ export default function App() {
                               {formatCurrency(g.monto)}
                             </td>
 
-                            {/* 1RA FIRMA: DIRECTOR */}
                             <td className="py-3 px-3 text-center">
                               <button
                                 disabled={g.firmaPresidente || !permissions.canFirstSign}
@@ -2244,7 +2128,6 @@ export default function App() {
                               </button>
                             </td>
 
-                            {/* 2DA FIRMA: DIRECTOR GENERAL */}
                             <td className="py-3 px-3 text-center">
                               <button
                                 disabled={g.firmaPresidente || !permissions.canSecondSign}
@@ -2262,7 +2145,6 @@ export default function App() {
                               </button>
                             </td>
 
-                            {/* 3RA FIRMA DIGITAL: PRESIDENTE */}
                             <td className="py-3 px-3 text-center">
                               {g.firmaPresidente ? (
                                 <div className="inline-flex flex-col items-center bg-[#0D4F8B]/10 border border-[#0D4F8B]/30 px-2.5 py-1 rounded-lg">
@@ -2301,9 +2183,6 @@ export default function App() {
           </div>
         )}
 
-        {/* =====================================================================
-            MÓDULO 3: CONSULTA EJECUTIVA (EXCLUSIVO PRESIDENTE)
-        ===================================================================== */}
         {activeModule === 'CONSULTA_PRESIDENTE' && permissions.canViewExecutiveSummary && selectedEvent && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -2408,10 +2287,6 @@ export default function App() {
           </div>
         )}
 
-        {/* =====================================================================
-            MÓDULO 4: CREACIÓN, CAMBIO DE CONTRASEÑA Y BAJA DE USUARIOS (PRESIDENTE)
-            (SIN SOLICITAR CUENTA DE BANCO YA QUE TODOS PUEDEN USAR TODAS)
-        ===================================================================== */}
         {activeModule === 'USUARIOS_ROLES' && permissions.canManageUsers && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
@@ -2550,9 +2425,6 @@ export default function App() {
           </div>
         )}
 
-        {/* =====================================================================
-            MÓDULO 5: ALTA DE CUENTA DE BANCO O TARJETA (DIR. GENERAL Y PRESIDENTE)
-        ===================================================================== */}
         {activeModule === 'CUENTAS_BANCARIAS' && permissions.canManageBankAccounts && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
