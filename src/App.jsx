@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { initializeApp, getApps } from 'firebase/app';
-import { getAuth, signInAnonymously } from 'firebase/auth';
+import { initializeApp, getApps, deleteApp } from 'firebase/app';
+import {
+  getAuth,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  onAuthStateChanged,
+  signOut
+} from 'firebase/auth';
 import { getFirestore, collection, doc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import {
   ShieldCheck, Lock, CheckCircle2, AlertTriangle, Building2, CreditCard,
@@ -67,7 +74,7 @@ const MGOLogo = ({ size = 'md' }) => {
 };
 
 // ============================================================================
-// 3. JERARQUÍA DE ROLES Y PERMISOS ESTRICTOS (RBAC)
+// 3. JERARQUÍA DE ROLES Y PERMISOS ESTRICTOS (RBAC) — SIN CONTRASEÑAS EN TEXTO
 // ============================================================================
 const ROLE_LABELS = {
   PROJECT_MANAGER: 'Project Manager',
@@ -83,12 +90,13 @@ const ROLE_RIGHTS_DESCRIPTION = {
   PRESIDENTE: 'Acceso total, Edición de Partidas Presupuestales, Firma Digital, Consulta Ejecutiva y Usuarios'
 };
 
+// Las contraseñas ya NO se guardan aquí ni en Firestore; viven encriptadas en Firebase Authentication
 const INITIAL_USERS = [
-  { id: 'u1', nombre: 'Pepe', cargo: 'Project Manager Operativo', email: 'pepe@mgoevents.com', password: 'MGO2026!', rol: 'PROJECT_MANAGER', activo: true },
-  { id: 'u2', nombre: 'Manu', cargo: 'Director de Operaciones', email: 'manu@mgoevents.com', password: 'MGO2026!', rol: 'DIRECTOR', activo: true },
-  { id: 'u3', nombre: 'Clarisa', cargo: 'Directora General', email: 'clarisa@mgoevents.com', password: 'MGO2026!', rol: 'DIRECTOR_GENERAL', activo: true },
-  { id: 'u4', nombre: 'Presidente MGO', cargo: 'Presidente del Consejo', email: 'presidente@mgoevents.com', password: 'MGO2026!', rol: 'PRESIDENTE', activo: true },
-  { id: 'u5', nombre: 'Carlos', cargo: 'Project Manager Vuelos y Sedes', email: 'carlos@mgoevents.com', password: 'MGO2026!', rol: 'PROJECT_MANAGER', activo: true }
+  { id: 'u1', nombre: 'Pepe', cargo: 'Project Manager Operativo', email: 'pepe@mgoevents.com', rol: 'PROJECT_MANAGER', activo: true },
+  { id: 'u2', nombre: 'Manu', cargo: 'Director de Operaciones', email: 'manu@mgoevents.com', rol: 'DIRECTOR', activo: true },
+  { id: 'u3', nombre: 'Clarisa', cargo: 'Directora General', email: 'clarisa@mgoevents.com', rol: 'DIRECTOR_GENERAL', activo: true },
+  { id: 'u4', nombre: 'Presidente MGO', cargo: 'Presidente del Consejo', email: 'presidente@mgoevents.com', rol: 'PRESIDENTE', activo: true },
+  { id: 'u5', nombre: 'Carlos', cargo: 'Project Manager Vuelos y Sedes', email: 'carlos@mgoevents.com', rol: 'PROJECT_MANAGER', activo: true }
 ];
 
 const INITIAL_ACCOUNTS = [
@@ -192,7 +200,6 @@ export default function App() {
   const [loginError, setLoginError] = useState('');
   const [failedAttempts, setFailedAttempts] = useState(0);
   const [lockoutUntil, setLockoutUntil] = useState(null);
-  const [visiblePasswordsMap, setVisiblePasswordsMap] = useState({});
 
   const [navigationStage, setNavigationStage] = useState('HUB');
   const [creationSessionMode, setCreationSessionMode] = useState('IDLE');
@@ -204,7 +211,11 @@ export default function App() {
   });
   const [users, setUsers] = useState(() => {
     const saved = localStorage.getItem('mgo_users_cloud_sync_v3');
-    return saved ? JSON.parse(saved) : INITIAL_USERS;
+    if (saved) {
+      const parsed = JSON.parse(saved).map(({ password, ...rest }) => rest);
+      return parsed;
+    }
+    return INITIAL_USERS;
   });
   const [accounts, setAccounts] = useState(() => {
     const saved = localStorage.getItem('mgo_accounts_cloud_sync_v3');
@@ -228,16 +239,36 @@ export default function App() {
   const [deleteUserModal, setDeleteUserModal] = useState(null);
   const [cloudStatus, setCloudStatus] = useState('connecting');
 
-  // Sincronización con Firebase Firestore autenticada
+  // ==========================================================================
+  // SINCRONIZACIÓN BLINDADA: SOLO ESCUCHA DATOS CUANDO HAY USUARIO AUTENTICADO REAL
+  // ==========================================================================
   useEffect(() => {
     if (!auth || !db) {
       setCloudStatus('local');
       return;
     }
-    signInAnonymously(auth)
-      .then(() => {
+
+    let unsubEvents = null;
+    let unsubUsers = null;
+    let unsubAccounts = null;
+
+    const cleanupSnapshots = () => {
+      if (unsubEvents) { unsubEvents(); unsubEvents = null; }
+      if (unsubUsers) { unsubUsers(); unsubUsers = null; }
+      if (unsubAccounts) { unsubAccounts(); unsubAccounts = null; }
+    };
+
+    const unsubscribeAuth = onAuthStateChanged(auth, (firebaseUser) => {
+      cleanupSnapshots();
+
+      if (
+        firebaseUser &&
+        !firebaseUser.isAnonymous &&
+        firebaseUser.email &&
+        firebaseUser.email.toLowerCase().endsWith('@mgoevents.com')
+      ) {
         const eventsRef = collection(db, 'artifacts', appId, 'public', 'data', 'mgo_events');
-        onSnapshot(eventsRef, (snapshot) => {
+        unsubEvents = onSnapshot(eventsRef, (snapshot) => {
           if (!snapshot.empty) {
             const cloudData = snapshot.docs.map((d) => d.data());
             setEvents(cloudData);
@@ -247,24 +278,35 @@ export default function App() {
         }, () => setCloudStatus('local'));
 
         const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'mgo_users');
-        onSnapshot(usersRef, (snapshot) => {
+        unsubUsers = onSnapshot(usersRef, (snapshot) => {
           if (!snapshot.empty) {
-            const cloudUsers = snapshot.docs.map((d) => d.data());
+            // Nunca cargamos ni almacenamos contraseñas en texto plano
+            const cloudUsers = snapshot.docs.map((d) => {
+              const { password, ...safeUser } = d.data();
+              return safeUser;
+            });
             setUsers(cloudUsers);
             localStorage.setItem('mgo_users_cloud_sync_v3', JSON.stringify(cloudUsers));
           }
         });
 
         const accRef = collection(db, 'artifacts', appId, 'public', 'data', 'mgo_accounts');
-        onSnapshot(accRef, (snapshot) => {
+        unsubAccounts = onSnapshot(accRef, (snapshot) => {
           if (!snapshot.empty) {
             const cloudAcc = snapshot.docs.map((d) => d.data());
             setAccounts(cloudAcc);
             localStorage.setItem('mgo_accounts_cloud_sync_v3', JSON.stringify(cloudAcc));
           }
         });
-      })
-      .catch(() => setCloudStatus('local'));
+      } else {
+        setCloudStatus('connecting');
+      }
+    });
+
+    return () => {
+      cleanupSnapshots();
+      unsubscribeAuth();
+    };
   }, []);
 
   // Cierre automático de sesión por inactividad (15 minutos)
@@ -273,7 +315,10 @@ export default function App() {
     let timer;
     const resetTimer = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => {
+      timer = setTimeout(async () => {
+        if (auth) {
+          try { await signOut(auth); } catch (e) {}
+        }
         setLoggedInUser(null);
         setLoginPassword('');
         setNavigationStage('HUB');
@@ -297,7 +342,7 @@ export default function App() {
       return next;
     });
 
-    if (db && cloudStatus === 'synced') {
+    if (db && auth?.currentUser && !auth.currentUser.isAnonymous) {
       try {
         await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'mgo_events', updatedEvent.id), updatedEvent);
       } catch (e) {
@@ -306,16 +351,18 @@ export default function App() {
     }
   };
 
+  // Garantiza que JAMÁS se suba un campo password a Firestore
   const syncUserToCloud = async (userObj) => {
+    const { password, ...safeUserObj } = userObj;
     setUsers((prev) => {
-      const exists = prev.some((u) => u.id === userObj.id);
-      const next = exists ? prev.map((u) => (u.id === userObj.id ? userObj : u)) : [...prev, userObj];
+      const exists = prev.some((u) => u.id === safeUserObj.id);
+      const next = exists ? prev.map((u) => (u.id === safeUserObj.id ? safeUserObj : u)) : [...prev, safeUserObj];
       localStorage.setItem('mgo_users_cloud_sync_v3', JSON.stringify(next));
       return next;
     });
-    if (db && cloudStatus === 'synced') {
+    if (db && auth?.currentUser && !auth.currentUser.isAnonymous) {
       try {
-        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'mgo_users', userObj.id), userObj);
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'mgo_users', safeUserObj.id), safeUserObj);
       } catch (e) {
         console.error('Error guardando usuario en Firebase:', e);
       }
@@ -329,7 +376,7 @@ export default function App() {
       localStorage.setItem('mgo_accounts_cloud_sync_v3', JSON.stringify(next));
       return next;
     });
-    if (db && cloudStatus === 'synced') {
+    if (db && auth?.currentUser && !auth.currentUser.isAnonymous) {
       try {
         await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'mgo_accounts', accObj.id), accObj);
       } catch (e) {
@@ -353,12 +400,10 @@ export default function App() {
       canPresidentSign: rol === 'PRESIDENTE',
       canViewExecutiveSummary: rol === 'PRESIDENTE',
       canManageUsers: rol === 'PRESIDENTE',
-      // Exclusivo Presidente: Editar montos de cada partida del presupuesto
       canEditBudgetAmounts: rol === 'PRESIDENTE'
     };
   }, [loggedInUser]);
 
-  // Filtrado de eventos: Project Manager solo ve y opera eventos donde está asignado como responsable
   const accessibleEvents = useMemo(() => {
     if (!loggedInUser) return [];
     if (loggedInUser.rol === 'PROJECT_MANAGER') {
@@ -375,9 +420,9 @@ export default function App() {
   };
 
   // ==========================================================================
-  // LÓGICA DE LOGIN CON PROTECCIÓN CONTRA FUERZA BRUTA Y DOMINIO @mgoevents.com
+  // LÓGICA DE LOGIN ENCRIPTADO CON FIREBASE AUTHENTICATION (@mgoevents.com)
   // ==========================================================================
-  const handleLogin = (e) => {
+  const handleLogin = async (e) => {
     e.preventDefault();
     setLoginError('');
 
@@ -394,30 +439,51 @@ export default function App() {
       return;
     }
 
-    const foundUser = users.find(
-      (u) => u.email.toLowerCase() === cleanEmail && u.password === loginPassword && u.activo
-    );
+    try {
+      // 1. Validación encriptada directa contra Firebase Authentication
+      await signInWithEmailAndPassword(auth, cleanEmail, loginPassword);
 
-    if (!foundUser) {
+      // 2. Búsqueda de perfil y rol en el directorio MGO
+      let foundUser = users.find((u) => u.email.toLowerCase() === cleanEmail);
+      if (!foundUser) {
+        const defaultMatch = INITIAL_USERS.find((u) => u.email.toLowerCase() === cleanEmail);
+        foundUser = defaultMatch || {
+          id: 'u-' + Date.now(),
+          nombre: cleanEmail.split('@')[0].toUpperCase(),
+          cargo: 'Ejecutivo MGO',
+          email: cleanEmail,
+          rol: cleanEmail.startsWith('presidente') ? 'PRESIDENTE' : 'PROJECT_MANAGER',
+          activo: true
+        };
+      }
+
+      if (foundUser.activo === false) {
+        await signOut(auth);
+        setLoginError('Esta cuenta de usuario se encuentra desactivada.');
+        return;
+      }
+
+      setFailedAttempts(0);
+      setLockoutUntil(null);
+      setLoggedInUser(foundUser);
+      setNavigationStage('HUB');
+    } catch (err) {
       const nextAttempts = failedAttempts + 1;
       setFailedAttempts(nextAttempts);
       if (nextAttempts >= 3) {
-        setLockoutUntil(Date.now() + 60 * 1000); // 60 segundos de bloqueo
+        setLockoutUntil(Date.now() + 60 * 1000);
         setFailedAttempts(0);
         setLoginError('Seguridad MGO: Se detectaron 3 intentos fallidos consecutivos. El acceso ha sido bloqueado por 60 segundos.');
       } else {
-        setLoginError(`Credenciales incorrectas. Intento ${nextAttempts} de 3 antes del bloqueo de seguridad.`);
+        setLoginError(`Credenciales inválidas en bóveda encriptada Firebase Auth. Intento ${nextAttempts} de 3.`);
       }
-      return;
     }
-
-    setFailedAttempts(0);
-    setLockoutUntil(null);
-    setLoggedInUser(foundUser);
-    setNavigationStage('HUB');
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    if (auth) {
+      try { await signOut(auth); } catch (e) {}
+    }
     setLoggedInUser(null);
     setLoginEmail('');
     setLoginPassword('');
@@ -487,7 +553,7 @@ export default function App() {
     localStorage.setItem('mgo_events_cloud_sync_v3', JSON.stringify(remaining));
     setSelectedEventId(remaining[0]?.id || null);
 
-    if (db && cloudStatus === 'synced') {
+    if (db && auth?.currentUser && !auth.currentUser.isAnonymous) {
       try {
         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'mgo_events', targetId));
       } catch (e) {
@@ -529,24 +595,26 @@ export default function App() {
   };
 
   // ==========================================================================
-  // CAMBIAR CONTRASEÑA Y ELIMINAR USUARIOS (EXCLUSIVO PRESIDENTE)
+  // RESTABLECER CONTRASEÑA EN FIREBASE AUTH Y ELIMINAR USUARIOS (PRESIDENTE)
   // ==========================================================================
   const handleSaveNewPassword = async (e) => {
     e.preventDefault();
     if (!passwordModalUser || !permissions.canManageUsers) return;
-    if (!newPasswordInput || newPasswordInput.trim().length < 6) {
-      showToast('error', 'Seguridad de Contraseña', 'La contraseña debe tener al menos 6 caracteres.');
-      return;
+
+    try {
+      await sendPasswordResetEmail(auth, passwordModalUser.email);
+      showToast(
+        'success',
+        'Enlace Encriptado Enviado',
+        `Firebase envió un correo oficial de cambio de contraseña a ${passwordModalUser.email}.`
+      );
+    } catch (err) {
+      showToast(
+        'error',
+        'Aviso de Firebase Auth',
+        'Para cambiarla directamente sin correo, puedes actualizarla en Firebase Console → Authentication → Users.'
+      );
     }
-
-    const updatedUser = { ...passwordModalUser, password: newPasswordInput.trim() };
-    await syncUserToCloud(updatedUser);
-
-    if (loggedInUser && loggedInUser.id === updatedUser.id) {
-      setLoggedInUser(updatedUser);
-    }
-
-    showToast('success', 'Contraseña Actualizada', `Se actualizó la contraseña de ${updatedUser.nombre} (${updatedUser.email}).`);
     setPasswordModalUser(null);
     setNewPasswordInput('');
   };
@@ -564,7 +632,7 @@ export default function App() {
     setUsers(remaining);
     localStorage.setItem('mgo_users_cloud_sync_v3', JSON.stringify(remaining));
 
-    if (db && cloudStatus === 'synced') {
+    if (db && auth?.currentUser && !auth.currentUser.isAnonymous) {
       try {
         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'mgo_users', targetId));
       } catch (e) {
@@ -661,7 +729,6 @@ export default function App() {
     if (!newEvtName.trim() || creationSessionMode === 'CREATED_LOCKED') return;
     const id = 'EVT-' + Date.now().toString().slice(-5);
 
-    // Si quien lo crea es Project Manager, queda asignado a él para que pueda operarlo
     const assignedResp = loggedInUser.rol === 'PROJECT_MANAGER' ? loggedInUser.nombre : newEvtResp;
 
     const nuevo = {
@@ -765,7 +832,6 @@ export default function App() {
     return selectedEvent?.sedes.find((s) => s.ciudad === city) || selectedEvent?.sedes[0];
   }, [selectedEvent, gastoCiudad]);
 
-  // Verifica si el usuario actual puede solicitar pagos en el evento seleccionado
   const canUserRequestPaymentInCurrentEvent = useMemo(() => {
     if (!loggedInUser || !selectedEvent) return false;
     if (loggedInUser.rol === 'PROJECT_MANAGER') {
@@ -825,7 +891,6 @@ export default function App() {
       return;
     }
 
-    // Regla 2: Project Manager solo puede solicitar pagos de eventos asignados a él
     if (!canUserRequestPaymentInCurrentEvent) {
       showToast(
         'error',
@@ -866,7 +931,6 @@ export default function App() {
       exceso: Math.max(0, montoNum - disponibleEnRubro)
     };
 
-    // Regla 1: Si excede lo presupuestado, arroja advertencia de sobregiro y pide aceptación
     if (montoNum > disponibleEnRubro || montoNum > disponibleGlobal) {
       setOverdraftRequestModal(payload);
       return;
@@ -875,7 +939,6 @@ export default function App() {
     await commitExpenseToDatabase(payload, false);
   };
 
-  // Ejecución real de firma del Presidente (llamada directo o tras confirmar sobregiro)
   const executePresidentSignature = async (gastoId, confirmedOverdraft = false) => {
     if (!selectedEvent) return;
     const sello = 'MGO-SIG-' + Math.floor(100000 + Math.random() * 900000) + (confirmedOverdraft ? '-PRES-OVD' : '-PRES');
@@ -914,7 +977,6 @@ export default function App() {
         return;
       }
 
-      // Verificar si este pago provoca o tiene sobregiro en su rubro
       const rubroObj = financialMetrics.porRubro.find((r) => r.categoria === targetGasto.categoria);
       const pagadoActualRubro = rubroObj ? rubroObj.pagadoRubro : 0;
       const presupuestoRubro = rubroObj ? rubroObj.presupuesto : 0;
@@ -971,7 +1033,7 @@ export default function App() {
   };
 
   // ==========================================================================
-  // ESTADOS MÓDULO 4 y 5: USUARIOS Y CUENTAS BANCARIAS
+  // ESTADOS MÓDULO 4 y 5: USUARIOS (CREACIÓN EN FIREBASE AUTH) Y CUENTAS
   // ==========================================================================
   const [uNombre, setUNombre] = useState('');
   const [uCargo, setUCargo] = useState('');
@@ -1002,12 +1064,26 @@ export default function App() {
       return;
     }
 
+    try {
+      // 1. Registra la cuenta encriptada en Firebase Authentication sin cerrar la sesión del Presidente
+      const secondaryApp = initializeApp(firebaseConfig, 'SecondaryAuthApp-' + Date.now());
+      const secondaryAuth = getAuth(secondaryApp);
+      await createUserWithEmailAndPassword(secondaryAuth, cleanMail, uPassword);
+      await signOut(secondaryAuth);
+      await deleteApp(secondaryApp);
+    } catch (authErr) {
+      if (authErr?.code !== 'auth/email-already-in-use') {
+        showToast('error', 'Error en Bóveda Firebase Auth', authErr.message || 'No se pudo registrar en Firebase Auth.');
+        return;
+      }
+    }
+
+    // 2. Guarda únicamente el perfil y rol en Firestore (SIN contraseña)
     const nuevo = {
       id: 'u-' + Date.now(),
       nombre: uNombre.trim(),
       cargo: uCargo.trim() || ROLE_LABELS[uRol],
       email: cleanMail,
-      password: uPassword,
       rol: uRol,
       activo: true
     };
@@ -1017,7 +1093,7 @@ export default function App() {
     setUCargo('');
     setUEmail('');
     setUPassword('');
-    showToast('success', 'Usuario Creado por Presidencia', `${nuevo.nombre} (${nuevo.email}) dado de alta.`);
+    showToast('success', 'Usuario Encriptado Creado', `${nuevo.nombre} (${nuevo.email}) registrado en Firebase Auth y MGO ERP.`);
   };
 
   const [accNombre, setAccNombre] = useState('');
@@ -1058,7 +1134,7 @@ export default function App() {
     setAccounts(remaining);
     localStorage.setItem('mgo_accounts_cloud_sync_v3', JSON.stringify(remaining));
 
-    if (db && cloudStatus === 'synced') {
+    if (db && auth?.currentUser && !auth.currentUser.isAnonymous) {
       try {
         await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'mgo_accounts', acc.id));
       } catch (e) {
@@ -1619,22 +1695,14 @@ export default function App() {
             <div className="flex items-center gap-3 text-[#0D4F8B]">
               <KeyRound className="w-7 h-7 shrink-0" />
               <div>
-                <h3 className="text-lg font-black text-slate-900">Cambiar Contraseña de Usuario</h3>
+                <h3 className="text-lg font-black text-slate-900">Restablecer Contraseña Encriptada</h3>
                 <p className="text-xs text-slate-500">{passwordModalUser.nombre} ({passwordModalUser.email})</p>
               </div>
             </div>
             <form onSubmit={handleSaveNewPassword} className="space-y-4">
-              <div>
-                <label className="text-xs font-bold text-slate-600 uppercase">Nueva Contraseña (mín. 6 caracteres) *</label>
-                <input
-                  type="text"
-                  placeholder="Ingresa la nueva contraseña"
-                  value={newPasswordInput}
-                  onChange={(e) => setNewPasswordInput(e.target.value)}
-                  className="w-full mt-1.5 px-3.5 py-2.5 border border-slate-300 rounded-xl text-sm font-mono font-bold focus:outline-none focus:border-[#0D4F8B]"
-                  required
-                />
-              </div>
+              <p className="text-xs text-slate-600 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                Por seguridad bancaria, las contraseñas ya no se almacenan en la base de datos. Al confirmar, <strong>Firebase Authentication</strong> enviará un enlace oficial de cambio de contraseña al correo <strong>{passwordModalUser.email}</strong>.
+              </p>
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   type="button"
@@ -1650,7 +1718,7 @@ export default function App() {
                   type="submit"
                   className="px-4 py-2 rounded-xl text-xs font-black bg-[#0D4F8B] hover:bg-[#093b69] text-white"
                 >
-                  Guardar Nueva Contraseña
+                  Enviar Correo de Restablecimiento
                 </button>
               </div>
             </form>
@@ -1665,7 +1733,7 @@ export default function App() {
               <Trash2 className="w-8 h-8 shrink-0" />
               <div>
                 <h3 className="text-lg font-black text-slate-900">¿Eliminar Usuario del Sistema?</h3>
-                <p className="text-xs text-slate-500">Esta acción revocará su acceso de forma inmediata</p>
+                <p className="text-xs text-slate-500">Esta acción revocará su perfil en el ERP de forma inmediata</p>
               </div>
             </div>
             <p className="text-sm text-slate-600">
@@ -2782,7 +2850,7 @@ export default function App() {
         )}
 
         {/* =====================================================================
-            MÓDULO 4: ADMINISTRACIÓN DE USUARIOS (CONTRASEÑAS ENMASCARADAS)
+            MÓDULO 4: ADMINISTRACIÓN DE USUARIOS (BÓVEDA ENCRIPTADA FIREBASE AUTH)
         ===================================================================== */}
         {activeModule === 'USUARIOS_ROLES' && permissions.canManageUsers && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -2792,7 +2860,7 @@ export default function App() {
                 Alta de Usuarios (Exclusivo Presidente)
               </div>
               <p className="text-xs text-slate-500 mb-4">
-                Todo usuario debe contar con correo <strong>@mgoevents.com</strong> y contraseña mínima de 6 caracteres.
+                Al crear un usuario aquí, su contraseña se registra encriptada en <strong>Firebase Authentication</strong> y nunca se guarda en texto plano.
               </p>
 
               <form onSubmit={handleAddUser} className="space-y-3 text-sm">
@@ -2819,9 +2887,9 @@ export default function App() {
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-bold text-slate-600">Contraseña de Acceso (mín. 6 caracteres) *</label>
+                  <label className="text-xs font-bold text-slate-600">Contraseña Inicial (mín. 6 caracteres) *</label>
                   <input
-                    type="text"
+                    type="password"
                     placeholder="Asignar contraseña segura"
                     value={uPassword}
                     onChange={(e) => setUPassword(e.target.value)}
@@ -2856,7 +2924,7 @@ export default function App() {
               <div className="p-4 border-b border-slate-200 bg-slate-50">
                 <h3 className="font-black text-slate-900">Directorio Oficial de Usuarios y Roles (@mgoevents.com)</h3>
                 <p className="text-xs text-slate-500">
-                  Por seguridad, las contraseñas permanecen ocultas hasta que presiones el ícono de visualización.
+                  Las contraseñas están blindadas mediante hash criptográfico en Firebase Auth (ningún tercero puede leerlas de la base de datos).
                 </p>
               </div>
               <div className="overflow-x-auto">
@@ -2865,71 +2933,60 @@ export default function App() {
                     <tr>
                       <th className="py-3 px-4 text-left">Usuario / Correo Oficial</th>
                       <th className="py-3 px-4 text-left">Rol Asignado</th>
-                      <th className="py-3 px-4 text-left">Contraseña</th>
+                      <th className="py-3 px-4 text-left">Seguridad Credencial</th>
                       <th className="py-3 px-4 text-right">Acciones (Presidente)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
-                    {users.map((u) => {
-                      const isPassShown = !!visiblePasswordsMap[u.id];
-                      return (
-                        <tr key={u.id} className="hover:bg-slate-50">
-                          <td className="py-3 px-4">
-                            <div className="font-black text-slate-900">{u.nombre}</div>
-                            <div className="text-xs font-semibold text-[#118A96]">{u.email}</div>
-                            <div className="text-[11px] text-slate-400">{ROLE_RIGHTS_DESCRIPTION[u.rol]}</div>
-                          </td>
-                          <td className="py-3 px-4">
-                            <span className="inline-block px-2.5 py-1 rounded-lg text-xs font-black bg-[#0D4F8B]/10 text-[#0D4F8B]">
-                              {ROLE_LABELS[u.rol]}
-                            </span>
-                          </td>
-                          <td className="py-3 px-4 text-xs font-mono font-bold text-slate-700">
-                            <div className="inline-flex items-center gap-2">
-                              <span>{isPassShown ? u.password : '••••••••'}</span>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setVisiblePasswordsMap((prev) => ({ ...prev, [u.id]: !prev[u.id] }))
-                                }
-                                className="text-slate-400 hover:text-slate-700"
-                              >
-                                {isPassShown ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                              </button>
-                            </div>
-                          </td>
-                          <td className="py-3 px-4 text-right">
-                            <div className="inline-flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setPasswordModalUser(u);
-                                  setNewPasswordInput(u.password);
-                                }}
-                                className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-100 hover:bg-[#0D4F8B] hover:text-white text-slate-700 inline-flex items-center gap-1 transition"
-                              >
-                                <KeyRound className="w-3.5 h-3.5" />
-                                Cambiar Contraseña
-                              </button>
+                    {users.map((u) => (
+                      <tr key={u.id} className="hover:bg-slate-50">
+                        <td className="py-3 px-4">
+                          <div className="font-black text-slate-900">{u.nombre}</div>
+                          <div className="text-xs font-semibold text-[#118A96]">{u.email}</div>
+                          <div className="text-[11px] text-slate-400">{ROLE_RIGHTS_DESCRIPTION[u.rol]}</div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="inline-block px-2.5 py-1 rounded-lg text-xs font-black bg-[#0D4F8B]/10 text-[#0D4F8B]">
+                            {ROLE_LABELS[u.rol]}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-xs font-bold text-emerald-700">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 border border-emerald-200">
+                            <ShieldCheck className="w-3.5 h-3.5" />
+                            Encriptada en Firebase Auth
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="inline-flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setPasswordModalUser(u);
+                                setNewPasswordInput('');
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-100 hover:bg-[#0D4F8B] hover:text-white text-slate-700 inline-flex items-center gap-1 transition"
+                            >
+                              <KeyRound className="w-3.5 h-3.5" />
+                              Restablecer Clave
+                            </button>
 
-                              <button
-                                type="button"
-                                disabled={u.id === loggedInUser.id}
-                                onClick={() => setDeleteUserModal(u)}
-                                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1 transition ${
-                                  u.id === loggedInUser.id
-                                    ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
-                                    : 'bg-red-50 hover:bg-red-600 hover:text-white text-red-600'
-                                }`}
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                                Eliminar
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
+                            <button
+                              type="button"
+                              disabled={u.id === loggedInUser.id}
+                              onClick={() => setDeleteUserModal(u)}
+                              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1 transition ${
+                                u.id === loggedInUser.id
+                                  ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
+                                  : 'bg-red-50 hover:bg-red-600 hover:text-white text-red-600'
+                              }`}
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              Eliminar
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
