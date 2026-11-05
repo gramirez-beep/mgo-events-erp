@@ -6,8 +6,8 @@ import {
   ShieldCheck, Lock, CheckCircle2, AlertTriangle, Building2, CreditCard,
   PlusCircle, DollarSign, Users, Calendar, MapPin, Check, KeyRound, Layers,
   Wallet, Landmark, Hotel, Trash2, UserPlus, ShieldAlert, TrendingDown,
-  BarChart3, Cloud, Download, LogOut, LogIn, Eye, EyeOff, ArrowLeft,
-  FolderOpen, ArrowRight, Globe
+  TrendingUp, BarChart3, Cloud, Download, LogOut, LogIn, Eye, EyeOff,
+  ArrowLeft, FolderOpen, ArrowRight, Globe, Edit3
 } from 'lucide-react';
 
 // ============================================================================
@@ -77,10 +77,10 @@ const ROLE_LABELS = {
 };
 
 const ROLE_RIGHTS_DESCRIPTION = {
-  PROJECT_MANAGER: 'Crear eventos y solicitar pagos ligados a presupuesto (uso de todas las cuentas)',
-  DIRECTOR: '1ra firma de pagos + Crear eventos y solicitar pagos',
+  PROJECT_MANAGER: 'Solicitar pagos únicamente en sus eventos asignados y crear eventos nuevos',
+  DIRECTOR: '1ra firma de pagos + Acceso a todos los eventos y solicitud de pagos',
   DIRECTOR_GENERAL: '2da firma de pagos + Alta de Cuentas/Tarjetas + Eliminar eventos + Derechos de Director',
-  PRESIDENTE: 'Acceso total al sistema, Firma Digital, Consulta Ejecutiva, Cuentas Bancarias y Alta de Usuarios'
+  PRESIDENTE: 'Acceso total, Edición de Partidas Presupuestales, Firma Digital, Consulta Ejecutiva y Usuarios'
 };
 
 const INITIAL_USERS = [
@@ -179,12 +179,20 @@ const RUBROS_SUGERIDOS = [
 const formatCurrency = (val, currency = 'MXN') =>
   new Intl.NumberFormat('es-MX', { style: 'currency', currency, minimumFractionDigits: 2 }).format(Number(val) || 0);
 
+const INACTIVITY_TIMEOUT_MS = 15 * 60 * 1000; // 15 minutos de seguridad
+
 export default function App() {
+  // ==========================================================================
+  // ESTADOS DE AUTENTICACIÓN, SEGURIDAD Y BASE DE DATOS
+  // ==========================================================================
   const [loggedInUser, setLoggedInUser] = useState(null);
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [failedAttempts, setFailedAttempts] = useState(0);
+  const [lockoutUntil, setLockoutUntil] = useState(null);
+  const [visiblePasswordsMap, setVisiblePasswordsMap] = useState({});
 
   const [navigationStage, setNavigationStage] = useState('HUB');
   const [creationSessionMode, setCreationSessionMode] = useState('IDLE');
@@ -205,13 +213,22 @@ export default function App() {
 
   const [selectedEventId, setSelectedEventId] = useState(null);
   const [notification, setNotification] = useState(null);
-  const [blockedModal, setBlockedModal] = useState(null);
+
+  // Modales de Sobregiro (Al solicitar gasto y al firmar como Presidente)
+  const [overdraftRequestModal, setOverdraftRequestModal] = useState(null);
+  const [presidentOverdraftSignModal, setPresidentOverdraftSignModal] = useState(null);
+
+  // Modal de Edición de Partida Presupuestal (Exclusivo Presidente)
+  const [editRubroModal, setEditRubroModal] = useState(null);
+  const [editRubroAmount, setEditRubroAmount] = useState('');
+
   const [deleteConfirmModal, setDeleteConfirmModal] = useState(null);
   const [passwordModalUser, setPasswordModalUser] = useState(null);
   const [newPasswordInput, setNewPasswordInput] = useState('');
   const [deleteUserModal, setDeleteUserModal] = useState(null);
   const [cloudStatus, setCloudStatus] = useState('connecting');
 
+  // Sincronización con Firebase Firestore autenticada
   useEffect(() => {
     if (!auth || !db) {
       setCloudStatus('local');
@@ -249,6 +266,28 @@ export default function App() {
       })
       .catch(() => setCloudStatus('local'));
   }, []);
+
+  // Cierre automático de sesión por inactividad (15 minutos)
+  useEffect(() => {
+    if (!loggedInUser) return;
+    let timer;
+    const resetTimer = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        setLoggedInUser(null);
+        setLoginPassword('');
+        setNavigationStage('HUB');
+        setLoginError('Por seguridad corporativa, tu sesión se cerró automáticamente tras 15 minutos de inactividad.');
+      }, INACTIVITY_TIMEOUT_MS);
+    };
+    const activityEvents = ['mousemove', 'keydown', 'click', 'scroll'];
+    activityEvents.forEach((ev) => window.addEventListener(ev, resetTimer));
+    resetTimer();
+    return () => {
+      clearTimeout(timer);
+      activityEvents.forEach((ev) => window.removeEventListener(ev, resetTimer));
+    };
+  }, [loggedInUser]);
 
   const syncEventToCloud = async (updatedEvent) => {
     setEvents((prev) => {
@@ -299,6 +338,9 @@ export default function App() {
     }
   };
 
+  // ==========================================================================
+  // PERMISOS Y EVENTOS ASIGNADOS SEGÚN EL ROL DEL USUARIO LOGUEADO
+  // ==========================================================================
   const permissions = useMemo(() => {
     if (!loggedInUser) return {};
     const rol = loggedInUser.rol;
@@ -310,18 +352,41 @@ export default function App() {
       canManageBankAccounts: ['DIRECTOR_GENERAL', 'PRESIDENTE'].includes(rol),
       canPresidentSign: rol === 'PRESIDENTE',
       canViewExecutiveSummary: rol === 'PRESIDENTE',
-      canManageUsers: rol === 'PRESIDENTE'
+      canManageUsers: rol === 'PRESIDENTE',
+      // Exclusivo Presidente: Editar montos de cada partida del presupuesto
+      canEditBudgetAmounts: rol === 'PRESIDENTE'
     };
   }, [loggedInUser]);
+
+  // Filtrado de eventos: Project Manager solo ve y opera eventos donde está asignado como responsable
+  const accessibleEvents = useMemo(() => {
+    if (!loggedInUser) return [];
+    if (loggedInUser.rol === 'PROJECT_MANAGER') {
+      return events.filter(
+        (ev) => ev.responsable?.trim().toLowerCase() === loggedInUser.nombre?.trim().toLowerCase()
+      );
+    }
+    return events;
+  }, [events, loggedInUser]);
 
   const showToast = (type, title, message) => {
     setNotification({ type, title, message });
     setTimeout(() => setNotification(null), 5000);
   };
 
+  // ==========================================================================
+  // LÓGICA DE LOGIN CON PROTECCIÓN CONTRA FUERZA BRUTA Y DOMINIO @mgoevents.com
+  // ==========================================================================
   const handleLogin = (e) => {
     e.preventDefault();
     setLoginError('');
+
+    if (lockoutUntil && Date.now() < lockoutUntil) {
+      const remainingSec = Math.ceil((lockoutUntil - Date.now()) / 1000);
+      setLoginError(`Sistema bloqueado temporalmente por seguridad tras múltiples intentos fallidos. Intenta de nuevo en ${remainingSec} segundos.`);
+      return;
+    }
+
     const cleanEmail = loginEmail.trim().toLowerCase();
 
     if (!cleanEmail.endsWith('@mgoevents.com')) {
@@ -334,10 +399,20 @@ export default function App() {
     );
 
     if (!foundUser) {
-      setLoginError('Usuario o contraseña incorrectos. Verifica tus credenciales corporativas de MGO Events.');
+      const nextAttempts = failedAttempts + 1;
+      setFailedAttempts(nextAttempts);
+      if (nextAttempts >= 3) {
+        setLockoutUntil(Date.now() + 60 * 1000); // 60 segundos de bloqueo
+        setFailedAttempts(0);
+        setLoginError('Seguridad MGO: Se detectaron 3 intentos fallidos consecutivos. El acceso ha sido bloqueado por 60 segundos.');
+      } else {
+        setLoginError(`Credenciales incorrectas. Intento ${nextAttempts} de 3 antes del bloqueo de seguridad.`);
+      }
       return;
     }
 
+    setFailedAttempts(0);
+    setLockoutUntil(null);
     setLoggedInUser(foundUser);
     setNavigationStage('HUB');
   };
@@ -351,6 +426,9 @@ export default function App() {
     setSelectedEventId(null);
   };
 
+  // ==========================================================================
+  // ACCIONES DE LA PANTALLA POST-LOGIN
+  // ==========================================================================
   const handleStartNewEventFromZero = () => {
     setSelectedEventId(null);
     setCreationSessionMode('NEW_BLANK');
@@ -369,7 +447,11 @@ export default function App() {
   };
 
   const handleWorkOnExistingEvent = (eventIdToOpen, targetModule) => {
-    const chosenId = eventIdToOpen || events[0]?.id;
+    const chosenId = eventIdToOpen || accessibleEvents[0]?.id;
+    if (!chosenId && targetModule !== 'USUARIOS_ROLES' && targetModule !== 'CUENTAS_BANCARIAS') {
+      showToast('error', 'Sin eventos asignados', 'No tienes eventos asignados actualmente. Crea un evento nuevo o solicita asignación.');
+      return;
+    }
     setSelectedEventId(chosenId);
     setCreationSessionMode('EXISTING_EDIT');
 
@@ -384,10 +466,13 @@ export default function App() {
   };
 
   const selectedEvent = useMemo(
-    () => events.find((e) => e.id === selectedEventId) || null,
-    [events, selectedEventId]
+    () => accessibleEvents.find((e) => e.id === selectedEventId) || null,
+    [accessibleEvents, selectedEventId]
   );
 
+  // ==========================================================================
+  // ELIMINACIÓN DE EVENTOS (SOLO DIRECTOR GENERAL Y PRESIDENTE)
+  // ==========================================================================
   const handleConfirmDeleteEvent = async () => {
     if (!deleteConfirmModal || !permissions.canDeleteEvent) return;
     if (events.length <= 1) {
@@ -400,7 +485,7 @@ export default function App() {
     const remaining = events.filter((e) => e.id !== targetId);
     setEvents(remaining);
     localStorage.setItem('mgo_events_cloud_sync_v3', JSON.stringify(remaining));
-    setSelectedEventId(remaining[0].id);
+    setSelectedEventId(remaining[0]?.id || null);
 
     if (db && cloudStatus === 'synced') {
       try {
@@ -414,11 +499,43 @@ export default function App() {
     setDeleteConfirmModal(null);
   };
 
+  // ==========================================================================
+  // EDICIÓN DE MONTO DE PARTIDA PRESUPUESTAL (EXCLUSIVO PRESIDENTE)
+  // ==========================================================================
+  const handleSaveEditedRubroAmount = async (e) => {
+    e.preventDefault();
+    if (!editRubroModal || !permissions.canEditBudgetAmounts || !selectedEvent) {
+      showToast('error', 'Acceso Denegado', 'Únicamente el Presidente puede editar los montos de las partidas presupuestales.');
+      return;
+    }
+    const nuevoMonto = parseFloat(editRubroAmount);
+    if (isNaN(nuevoMonto) || nuevoMonto < 0) {
+      showToast('error', 'Monto inválido', 'Ingresa un monto presupuestal válido.');
+      return;
+    }
+
+    const updatedRubros = selectedEvent.rubrosPresupuesto.map((r) =>
+      r.id === editRubroModal.id ? { ...r, presupuesto: nuevoMonto } : r
+    );
+
+    await syncEventToCloud({ ...selectedEvent, rubrosPresupuesto: updatedRubros });
+    showToast(
+      'success',
+      'Partida Actualizada por Presidencia',
+      `El presupuesto de "${editRubroModal.categoria}" se actualizó a ${formatCurrency(nuevoMonto)}.`
+    );
+    setEditRubroModal(null);
+    setEditRubroAmount('');
+  };
+
+  // ==========================================================================
+  // CAMBIAR CONTRASEÑA Y ELIMINAR USUARIOS (EXCLUSIVO PRESIDENTE)
+  // ==========================================================================
   const handleSaveNewPassword = async (e) => {
     e.preventDefault();
     if (!passwordModalUser || !permissions.canManageUsers) return;
-    if (!newPasswordInput || newPasswordInput.trim().length < 4) {
-      showToast('error', 'Contraseña muy corta', 'Ingresa al menos 4 caracteres para la nueva contraseña.');
+    if (!newPasswordInput || newPasswordInput.trim().length < 6) {
+      showToast('error', 'Seguridad de Contraseña', 'La contraseña debe tener al menos 6 caracteres.');
       return;
     }
 
@@ -459,6 +576,9 @@ export default function App() {
     setDeleteUserModal(null);
   };
 
+  // ==========================================================================
+  // CÁLCULOS FINANCIEROS EN TIEMPO REAL Y DETECCIÓN DE SOBREGIROS
+  // ==========================================================================
   const financialMetrics = useMemo(() => {
     if (!selectedEvent) {
       return {
@@ -488,6 +608,7 @@ export default function App() {
       const comprometidoRubro = pagadoRubro + tramiteRubro;
       const disponibleRubro = r.presupuesto - comprometidoRubro;
       const ahorroRubro = r.presupuesto - pagadoRubro;
+      const isOverdraft = ahorroRubro < 0 || disponibleRubro < 0;
       return {
         ...r,
         pagadoRubro,
@@ -495,7 +616,8 @@ export default function App() {
         comprometidoRubro,
         disponibleRubro,
         ahorroRubro,
-        porcentajeEjercido: r.presupuesto > 0 ? (pagadoRubro / r.presupuesto) * 100 : 0
+        isOverdraft,
+        porcentajeEjercido: r.presupuesto > 0 ? (pagadoRubro / r.presupuesto) * 100 : (pagadoRubro > 0 ? 100 : 0)
       };
     });
 
@@ -517,6 +639,9 @@ export default function App() {
     };
   }, [selectedEvent]);
 
+  // ==========================================================================
+  // ESTADOS MÓDULO 1: CREACIÓN DE EVENTO
+  // ==========================================================================
   const [newEvtName, setNewEvtName] = useState('');
   const [newEvtClient, setNewEvtClient] = useState('');
   const [newEvtStart, setNewEvtStart] = useState('2026-11-15');
@@ -536,13 +661,16 @@ export default function App() {
     if (!newEvtName.trim() || creationSessionMode === 'CREATED_LOCKED') return;
     const id = 'EVT-' + Date.now().toString().slice(-5);
 
+    // Si quien lo crea es Project Manager, queda asignado a él para que pueda operarlo
+    const assignedResp = loggedInUser.rol === 'PROJECT_MANAGER' ? loggedInUser.nombre : newEvtResp;
+
     const nuevo = {
       id,
       nombre: newEvtName.trim(),
       cliente: newEvtClient.trim() || 'Cliente Deportivo',
       fechaInicio: newEvtStart,
       fechaFin: newEvtEnd,
-      responsable: newEvtResp,
+      responsable: assignedResp,
       moneda: 'MXN',
       estatus: 'En Planeación Presupuestal',
       sedes: [],
@@ -553,7 +681,7 @@ export default function App() {
     await syncEventToCloud(nuevo);
     setSelectedEventId(id);
     setCreationSessionMode('CREATED_LOCKED');
-    showToast('success', 'Evento Creado en Limpio', `Se dio de alta "${nuevo.nombre}". Se han desbloqueado los pasos 1B (Sedes/Hoteles) y 1C (Rubros).`);
+    showToast('success', 'Evento Creado en Limpio', `Se dio de alta "${nuevo.nombre}" (Responsable: ${assignedResp}). Se han desbloqueado los pasos 1B y 1C.`);
   };
 
   const handleAddCity = async () => {
@@ -595,6 +723,12 @@ export default function App() {
     const existing = selectedEvent.rubrosPresupuesto.find(
       (r) => r.categoria.toLowerCase() === newRubroName.trim().toLowerCase()
     );
+
+    if (existing && !permissions.canEditBudgetAmounts) {
+      showToast('error', 'Facultad Exclusiva del Presidente', 'Este rubro ya existe. Solo el usuario Presidente puede modificar montos de partidas ya creadas.');
+      return;
+    }
+
     let updatedRubros;
     if (existing) {
       updatedRubros = selectedEvent.rubrosPresupuesto.map((r) =>
@@ -614,6 +748,9 @@ export default function App() {
     showToast('success', 'Presupuesto Actualizado', `Rubro "${newRubroName}" agregado con ${formatCurrency(monto)}.`);
   };
 
+  // ==========================================================================
+  // ESTADOS MÓDULO 2: GASTOS, VALIDACIÓN DE ASIGNACIÓN PM Y SOBREGIROS
+  // ==========================================================================
   const [gastoCiudad, setGastoCiudad] = useState('');
   const [gastoHotel, setGastoHotel] = useState('');
   const [gastoCategoria, setGastoCategoria] = useState('');
@@ -628,12 +765,76 @@ export default function App() {
     return selectedEvent?.sedes.find((s) => s.ciudad === city) || selectedEvent?.sedes[0];
   }, [selectedEvent, gastoCiudad]);
 
+  // Verifica si el usuario actual puede solicitar pagos en el evento seleccionado
+  const canUserRequestPaymentInCurrentEvent = useMemo(() => {
+    if (!loggedInUser || !selectedEvent) return false;
+    if (loggedInUser.rol === 'PROJECT_MANAGER') {
+      return selectedEvent.responsable?.trim().toLowerCase() === loggedInUser.nombre?.trim().toLowerCase();
+    }
+    return true;
+  }, [loggedInUser, selectedEvent]);
+
+  const commitExpenseToDatabase = async (expensePayload, isOverdraftAccepted = false) => {
+    const nuevoGasto = {
+      id: 'MGO-' + Math.floor(1000 + Math.random() * 9000),
+      fecha: new Date().toISOString().split('T')[0],
+      sedeCiudad: expensePayload.sedeCiudad,
+      hotel: expensePayload.hotel,
+      categoria: expensePayload.categoria,
+      proveedor: expensePayload.proveedor,
+      concepto: expensePayload.concepto,
+      descripcion: isOverdraftAccepted
+        ? `Solicitado por ${loggedInUser.nombre} (SOBREGIRO ACEPTADO POR SOLICITANTE)`
+        : `Solicitado por ${loggedInUser.nombre}`,
+      monto: expensePayload.monto,
+      formaPago: expensePayload.formaPago,
+      cuenta: expensePayload.cuenta,
+      pagadoPor: loggedInUser.nombre,
+      solicitadoPor: loggedInUser.nombre,
+      comprobante: 'Factura',
+      esSobregiro: isOverdraftAccepted,
+      excesoSobregiro: expensePayload.exceso || 0,
+      authDirOp: false,
+      authDirGen: false,
+      firmaPresidente: false,
+      selloDigital: null,
+      estatus: isOverdraftAccepted ? 'En Trámite (CON SOBREGIRO)' : 'Pendiente 2 Autorizaciones'
+    };
+
+    await syncEventToCloud({
+      ...selectedEvent,
+      gastos: [nuevoGasto, ...selectedEvent.gastos]
+    });
+
+    setGastoProveedor('');
+    setGastoConcepto('');
+    setGastoMonto('');
+    setOverdraftRequestModal(null);
+
+    if (isOverdraftAccepted) {
+      showToast('error', 'Solicitud con Sobregiro Registrada', 'El pago fue ingresado bajo advertencia de sobregiro y requerirá confirmación especial del Presidente.');
+    } else {
+      showToast('success', 'Solicitud Registrada', 'El pago se encuentra dentro del presupuesto y espera 1ra y 2da firma.');
+    }
+  };
+
   const handleRegisterExpense = async (e) => {
     e.preventDefault();
     if (!selectedEvent) {
       showToast('error', 'Sin evento activo', 'Selecciona o crea un evento primero.');
       return;
     }
+
+    // Regla 2: Project Manager solo puede solicitar pagos de eventos asignados a él
+    if (!canUserRequestPaymentInCurrentEvent) {
+      showToast(
+        'error',
+        'Evento No Asignado a tu Usuario',
+        `Como Project Manager (${loggedInUser.nombre}), solo puedes solicitar pagos en eventos donde estás asignado como Responsable.`
+      );
+      return;
+    }
+
     if (selectedEvent.rubrosPresupuesto.length === 0) {
       showToast('error', 'Sin presupuesto cargado', 'Primero agrega rubros presupuestales en el paso 1C.');
       return;
@@ -649,63 +850,98 @@ export default function App() {
     const rubroInfo = financialMetrics.porRubro.find((r) => r.categoria === cat);
     const disponibleEnRubro = rubroInfo ? rubroInfo.disponibleRubro : 0;
     const disponibleGlobal = financialMetrics.disponibleParaComprometer;
-
-    if (montoNum > disponibleEnRubro || montoNum > disponibleGlobal) {
-      setBlockedModal({
-        proveedor: gastoProveedor,
-        concepto: gastoConcepto,
-        categoria: cat,
-        montoIntentado: montoNum,
-        disponibleRubro: disponibleEnRubro,
-        presupuestoRubro: rubroInfo?.presupuesto || 0,
-        exceso: montoNum - disponibleEnRubro
-      });
-      return;
-    }
-
     const cuentaElegida = gastoCuenta || accounts[0]?.nombre || 'MGO Digital';
 
-    const nuevoGasto = {
-      id: 'MGO-' + Math.floor(1000 + Math.random() * 9000),
-      fecha: new Date().toISOString().split('T')[0],
+    const payload = {
       sedeCiudad: activeSedeObj?.ciudad || 'Sede General',
       hotel: gastoHotel || activeSedeObj?.hoteles[0] || 'Sede Oficial',
       categoria: cat,
       proveedor: gastoProveedor.trim(),
       concepto: gastoConcepto.trim(),
-      descripcion: `Solicitado por ${loggedInUser.nombre}`,
       monto: montoNum,
       formaPago: gastoFormaPago,
       cuenta: cuentaElegida,
-      pagadoPor: loggedInUser.nombre,
-      solicitadoPor: loggedInUser.nombre,
-      comprobante: 'Factura',
-      authDirOp: false,
-      authDirGen: false,
-      firmaPresidente: false,
-      selloDigital: null,
-      estatus: 'Pendiente 2 Autorizaciones'
+      disponibleRubro: disponibleEnRubro,
+      presupuestoRubro: rubroInfo?.presupuesto || 0,
+      exceso: Math.max(0, montoNum - disponibleEnRubro)
     };
 
-    await syncEventToCloud({
-      ...selectedEvent,
-      gastos: [nuevoGasto, ...selectedEvent.gastos]
+    // Regla 1: Si excede lo presupuestado, arroja advertencia de sobregiro y pide aceptación
+    if (montoNum > disponibleEnRubro || montoNum > disponibleGlobal) {
+      setOverdraftRequestModal(payload);
+      return;
+    }
+
+    await commitExpenseToDatabase(payload, false);
+  };
+
+  // Ejecución real de firma del Presidente (llamada directo o tras confirmar sobregiro)
+  const executePresidentSignature = async (gastoId, confirmedOverdraft = false) => {
+    if (!selectedEvent) return;
+    const sello = 'MGO-SIG-' + Math.floor(100000 + Math.random() * 900000) + (confirmedOverdraft ? '-PRES-OVD' : '-PRES');
+    const updatedGastos = selectedEvent.gastos.map((g) => {
+      if (g.id !== gastoId) return g;
+      return {
+        ...g,
+        firmaPresidente: true,
+        selloDigital: sello,
+        esSobregiro: g.esSobregiro || confirmedOverdraft,
+        estatus: confirmedOverdraft ? 'Pagado (Sobregiro Autorizado)' : 'Pagado'
+      };
     });
 
-    setGastoProveedor('');
-    setGastoConcepto('');
-    setGastoMonto('');
-    showToast('success', 'Solicitud Registrada', 'El pago pasó el candado presupuestal y espera 1ra y 2da firma.');
+    await syncEventToCloud({ ...selectedEvent, gastos: updatedGastos });
+    setPresidentOverdraftSignModal(null);
+    showToast(
+      'success',
+      confirmedOverdraft ? 'Sobregiro Autorizado y Firmado' : 'Firma Digital Estampada',
+      `Pago liberado por Presidencia con sello ${sello}.`
+    );
   };
 
   const handleToggleAuth = async (gastoId, type) => {
     if (!selectedEvent) return;
+    const targetGasto = selectedEvent.gastos.find((g) => g.id === gastoId);
+    if (!targetGasto) return;
+
+    if (type === 'PRESIDENTE') {
+      if (!permissions.canPresidentSign) {
+        showToast('error', 'Exclusivo del Presidente', 'Únicamente el Presidente puede estampar la Firma Digital liberadora.');
+        return;
+      }
+      if (!targetGasto.authDirOp || !targetGasto.authDirGen) {
+        showToast('error', 'Firma Bloqueada por Regla MGO', 'El Presidente no puede firmar pagos sin las 2 autorizaciones previas (Director y Director General).');
+        return;
+      }
+
+      // Verificar si este pago provoca o tiene sobregiro en su rubro
+      const rubroObj = financialMetrics.porRubro.find((r) => r.categoria === targetGasto.categoria);
+      const pagadoActualRubro = rubroObj ? rubroObj.pagadoRubro : 0;
+      const presupuestoRubro = rubroObj ? rubroObj.presupuesto : 0;
+      const nuevoTotalPagadoRubro = pagadoActualRubro + Number(targetGasto.monto || 0);
+      const excedeAlFirmar = targetGasto.esSobregiro || nuevoTotalPagadoRubro > presupuestoRubro;
+
+      if (excedeAlFirmar) {
+        setPresidentOverdraftSignModal({
+          gasto: targetGasto,
+          presupuestoRubro,
+          pagadoActualRubro,
+          nuevoTotalPagadoRubro,
+          excesoTotal: Math.max(0, nuevoTotalPagadoRubro - presupuestoRubro)
+        });
+        return;
+      }
+
+      await executePresidentSignature(gastoId, false);
+      return;
+    }
+
     const updatedGastos = selectedEvent.gastos.map((g) => {
       if (g.id !== gastoId) return g;
 
       if (type === 'FIRST_SIGN') {
         if (!permissions.canFirstSign) {
-          showToast('error', 'Permiso Denegado', 'Tu rol de Project Manager no cuenta con facultades para dar la 1ra Firma (requiere rol Director o superior).');
+          showToast('error', 'Permiso Denegado', 'Tu rol de Project Manager no cuenta con facultades para dar la 1ra Firma.');
           return g;
         }
         const nextVal = !g.authDirOp;
@@ -728,31 +964,15 @@ export default function App() {
           estatus: g.authDirOp && nextVal ? 'Listo para Firma Presidente' : 'Pendiente Autorización'
         };
       }
-
-      if (type === 'PRESIDENTE') {
-        if (!permissions.canPresidentSign) {
-          showToast('error', 'Exclusivo del Presidente', 'Únicamente el Presidente puede estampar la Firma Digital liberadora.');
-          return g;
-        }
-        if (!g.authDirOp || !g.authDirGen) {
-          showToast('error', 'Firma Bloqueada por Regla MGO', 'El Presidente no puede firmar pagos sin las 2 autorizaciones previas (Director y Director General).');
-          return g;
-        }
-        const sello = 'MGO-SIG-' + Math.floor(100000 + Math.random() * 900000) + '-PRES';
-        showToast('success', 'Firma Digital Estampada', `Pago liberado con sello ${sello}.`);
-        return {
-          ...g,
-          firmaPresidente: true,
-          selloDigital: sello,
-          estatus: 'Pagado'
-        };
-      }
       return g;
     });
 
     await syncEventToCloud({ ...selectedEvent, gastos: updatedGastos });
   };
 
+  // ==========================================================================
+  // ESTADOS MÓDULO 4 y 5: USUARIOS Y CUENTAS BANCARIAS
+  // ==========================================================================
   const [uNombre, setUNombre] = useState('');
   const [uCargo, setUCargo] = useState('');
   const [uEmail, setUEmail] = useState('');
@@ -777,8 +997,8 @@ export default function App() {
       return;
     }
 
-    if (!uPassword || uPassword.length < 4) {
-      showToast('error', 'Contraseña requerida', 'Asigna una contraseña de al menos 4 caracteres para el usuario.');
+    if (!uPassword || uPassword.length < 6) {
+      showToast('error', 'Política de Seguridad', 'Asigna una contraseña segura de al menos 6 caracteres.');
       return;
     }
 
@@ -797,7 +1017,7 @@ export default function App() {
     setUCargo('');
     setUEmail('');
     setUPassword('');
-    showToast('success', 'Usuario Creado por Presidencia', `${nuevo.nombre} (${nuevo.email}) dado de alta con acceso a todas las cuentas corporativas.`);
+    showToast('success', 'Usuario Creado por Presidencia', `${nuevo.nombre} (${nuevo.email}) dado de alta.`);
   };
 
   const [accNombre, setAccNombre] = useState('');
@@ -807,14 +1027,8 @@ export default function App() {
 
   const handleAddBankAccount = async (e) => {
     e.preventDefault();
-    if (!permissions.canManageBankAccounts) {
-      showToast('error', 'Acceso Restringido', 'Solo Dirección General y el Presidente pueden dar de alta cuentas o tarjetas.');
-      return;
-    }
-    if (!accBancoEmisor.trim()) {
-      showToast('error', 'Banco Emisor requerido', 'Indica el nombre del Banco Emisor.');
-      return;
-    }
+    if (!permissions.canManageBankAccounts) return;
+    if (!accBancoEmisor.trim()) return;
 
     const etiquetaNombre = accNombre.trim()
       ? `${accNombre.trim()} (${accBancoEmisor.trim()})`
@@ -831,7 +1045,7 @@ export default function App() {
     await syncAccountToCloud(nuevaCuenta);
     setAccNombre('');
     setAccBancoEmisor('');
-    showToast('success', 'Cuenta / Tarjeta Dada de Alta', `Se registró "${nuevaCuenta.nombre}" (${nuevaCuenta.tipoCuenta} • ${nuevaCuenta.pais}) para uso de todos los usuarios.`);
+    showToast('success', 'Cuenta / Tarjeta Dada de Alta', `Se registró "${nuevaCuenta.nombre}" (${nuevaCuenta.tipoCuenta} • ${nuevaCuenta.pais}).`);
   };
 
   const handleDeleteBankAccount = async (acc) => {
@@ -863,12 +1077,12 @@ export default function App() {
       ['Presupuesto Total:', financialMetrics.presupuestoTotal, 'Total Pagado (Firmado):', financialMetrics.totalPagado],
       ['Ahorro / Desviacion vs Pagado:', financialMetrics.ahorroSoloPagado],
       [],
-      ['ID', 'Fecha', 'Ciudad Sede', 'Hotel', 'Rubro / Categoria', 'Proveedor', 'Concepto', 'Monto MXN', 'Forma de Pago', 'Cuenta / Tarjeta', '1ra Firma Director', '2da Firma Dir General', 'Firma Digital Presidente', 'Sello Digital']
+      ['ID', 'Fecha', 'Ciudad Sede', 'Hotel', 'Rubro / Categoria', 'Proveedor', 'Concepto', 'Monto MXN', 'Sobregiro', 'Forma de Pago', 'Cuenta / Tarjeta', '1ra Firma Director', '2da Firma Dir General', 'Firma Digital Presidente', 'Sello Digital']
     ];
     selectedEvent.gastos.forEach((g) => {
       rows.push([
         g.id, g.fecha, g.sedeCiudad, g.hotel, g.categoria, g.proveedor, g.concepto,
-        g.monto, g.formaPago, g.cuenta,
+        g.monto, g.esSobregiro ? 'SI (SOBREGIRO)' : 'NO', g.formaPago, g.cuenta,
         g.authDirOp ? 'AUTORIZADO' : 'PENDIENTE',
         g.authDirGen ? 'AUTORIZADO' : 'PENDIENTE',
         g.firmaPresidente ? 'FIRMADO Y PAGADO' : 'SIN FIRMA',
@@ -884,6 +1098,9 @@ export default function App() {
     document.body.removeChild(link);
   };
 
+  // ==========================================================================
+  // VISTA 1: LOGIN CORPORATIVO BLINDADO (@mgoevents.com)
+  // ==========================================================================
   if (!loggedInUser) {
     return (
       <div className="min-h-screen bg-slate-950 flex flex-col justify-between relative overflow-hidden font-sans">
@@ -894,10 +1111,10 @@ export default function App() {
             <div className="p-8 pb-6 text-center border-b border-slate-100 bg-slate-50/60 flex flex-col items-center">
               <MGOLogo size="lg" />
               <span className="mt-4 inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider px-3 py-1 rounded-full bg-[#0D4F8B]/10 text-[#0D4F8B]">
-                <Lock className="w-3.5 h-3.5" /> Acceso Corporativo Restringido
+                <Lock className="w-3.5 h-3.5" /> Acceso Corporativo Encriptado
               </span>
               <p className="text-xs text-slate-500 mt-2">
-                Ingresa con tu cuenta oficial <strong>@mgoevents.com</strong> para acceder al sistema de control presupuestal.
+                Ingresa con tu cuenta oficial <strong>@mgoevents.com</strong>. Sesión protegida con bloqueo anti-intrusión y cierre automático.
               </p>
             </div>
 
@@ -958,17 +1175,20 @@ export default function App() {
         </div>
 
         <footer className="text-center py-4 text-xs text-slate-500">
-          MGO Events — High Performance Sports Logistics • Todos los derechos reservados
+          MGO Events — High Performance Sports Logistics • Seguridad Financiera Activa
         </footer>
       </div>
     );
   }
 
+  // ==========================================================================
+  // VISTA 2: PANTALLA ESTÉTICA POST-LOGIN CON LAS 2 GRANDES OPCIONES
+  // ==========================================================================
   if (navigationStage === 'HUB') {
     const roleActionsList = {
       PROJECT_MANAGER: [
-        { label: 'Solicitar Gasto / Pago contra Presupuesto', module: 'GASTOS_AUTORIZACION', icon: CreditCard, color: '#9B1B60' },
-        { label: 'Agregar Sedes, Hoteles o Rubros a Evento', module: 'CREACION_EVENTO', icon: Layers, color: '#118A96' }
+        { label: 'Solicitar Gasto / Pago en mis Eventos Asignados', module: 'GASTOS_AUTORIZACION', icon: CreditCard, color: '#9B1B60' },
+        { label: 'Agregar Sedes, Hoteles o Rubros a mis Eventos', module: 'CREACION_EVENTO', icon: Layers, color: '#118A96' }
       ],
       DIRECTOR: [
         { label: 'Autorizar Pagos (1ra Firma Director) y Solicitar Gastos', module: 'GASTOS_AUTORIZACION', icon: ShieldCheck, color: '#9B1B60' },
@@ -980,8 +1200,8 @@ export default function App() {
         { label: 'Editar Sedes / Rubros o Eliminar Eventos Creados', module: 'CREACION_EVENTO', icon: Layers, color: '#118A96' }
       ],
       PRESIDENTE: [
-        { label: 'Ver Reporte Ejecutivo y Cierre en Tiempo Real', module: 'CONSULTA_PRESIDENTE', icon: BarChart3, color: '#0D4F8B' },
-        { label: 'Firmar Pagos (Firma Digital) y Autorizaciones', module: 'GASTOS_AUTORIZACION', icon: KeyRound, color: '#9B1B60' },
+        { label: 'Ver Reporte Ejecutivo, Sobregiros y Editar Partidas', module: 'CONSULTA_PRESIDENTE', icon: BarChart3, color: '#0D4F8B' },
+        { label: 'Firmar Pagos (Firma Digital) y Autorizar Sobregiros', module: 'GASTOS_AUTORIZACION', icon: KeyRound, color: '#9B1B60' },
         { label: 'Dar de Alta Cuenta de Banco o Tarjeta (México / USA)', module: 'CUENTAS_BANCARIAS', icon: Landmark, color: '#118A96' },
         { label: 'Crear / Eliminar Usuarios y Cambiar Contraseñas', module: 'USUARIOS_ROLES', icon: Users, color: '#F37338' }
       ]
@@ -1089,24 +1309,34 @@ export default function App() {
                   2. Trabajar en un Evento Existente
                 </h2>
                 <p className="text-sm text-slate-300 mt-2 leading-relaxed">
-                  Selecciona un evento en curso y accede directamente a las funciones habilitadas para tu nivel de autorización:
+                  {loggedInUser.rol === 'PROJECT_MANAGER'
+                    ? 'Selecciona uno de los eventos asignados a tu nombre para solicitar pagos:'
+                    : 'Selecciona un evento en curso y accede a las funciones de tu nivel de autorización:'}
                 </p>
 
                 <div className="mt-5">
                   <label className="text-[11px] font-bold uppercase tracking-wider text-[#F5D34B]">
-                    Seleccionar Evento Activo en Base de Datos:
+                    {loggedInUser.rol === 'PROJECT_MANAGER'
+                      ? `Eventos Asignados a ${loggedInUser.nombre}:`
+                      : 'Seleccionar Evento Activo en Base de Datos:'}
                   </label>
-                  <select
-                    value={selectedEventId || events[0]?.id || ''}
-                    onChange={(e) => setSelectedEventId(e.target.value)}
-                    className="w-full mt-1.5 px-4 py-3 rounded-xl bg-slate-950 border border-white/20 text-white font-bold text-sm focus:outline-none focus:border-[#F5D34B]"
-                  >
-                    {events.map((ev) => (
-                      <option key={ev.id} value={ev.id}>
-                        {ev.nombre} — ({ev.estatus})
-                      </option>
-                    ))}
-                  </select>
+                  {accessibleEvents.length === 0 ? (
+                    <div className="mt-2 p-3 rounded-xl bg-red-950/60 border border-red-500/40 text-xs text-red-200">
+                      No tienes eventos asignados como responsable en este momento.
+                    </div>
+                  ) : (
+                    <select
+                      value={selectedEventId || accessibleEvents[0]?.id || ''}
+                      onChange={(e) => setSelectedEventId(e.target.value)}
+                      className="w-full mt-1.5 px-4 py-3 rounded-xl bg-slate-950 border border-white/20 text-white font-bold text-sm focus:outline-none focus:border-[#F5D34B]"
+                    >
+                      {accessibleEvents.map((ev) => (
+                        <option key={ev.id} value={ev.id}>
+                          {ev.nombre} — (Resp: {ev.responsable})
+                        </option>
+                      ))}
+                    </select>
+                  )}
                 </div>
 
                 <div className="mt-5 space-y-2">
@@ -1118,7 +1348,7 @@ export default function App() {
                     return (
                       <button
                         key={idx}
-                        onClick={() => handleWorkOnExistingEvent(selectedEventId || events[0]?.id, act.module)}
+                        onClick={() => handleWorkOnExistingEvent(selectedEventId || accessibleEvents[0]?.id, act.module)}
                         className="w-full p-3 rounded-xl bg-white/5 hover:bg-white/15 border border-white/10 flex items-center justify-between text-left transition group"
                       >
                         <div className="flex items-center gap-3">
@@ -1140,8 +1370,9 @@ export default function App() {
               </div>
 
               <button
-                onClick={() => handleWorkOnExistingEvent(selectedEventId || events[0]?.id)}
-                className="mt-6 w-full bg-gradient-to-r from-[#9B1B60] via-[#EE2743] to-[#F37338] hover:opacity-95 text-white font-black py-4 px-6 rounded-2xl shadow-xl flex items-center justify-center gap-3 text-base transition"
+                disabled={accessibleEvents.length === 0}
+                onClick={() => handleWorkOnExistingEvent(selectedEventId || accessibleEvents[0]?.id)}
+                className="mt-6 w-full bg-gradient-to-r from-[#9B1B60] via-[#EE2743] to-[#F37338] hover:opacity-95 disabled:opacity-40 text-white font-black py-4 px-6 rounded-2xl shadow-xl flex items-center justify-center gap-3 text-base transition"
               >
                 <span>Abrir Evento Seleccionado</span>
                 <ArrowRight className="w-5 h-5" />
@@ -1180,7 +1411,7 @@ export default function App() {
       id: 'CONSULTA_PRESIDENTE',
       num: '3',
       title: 'Consulta Ejecutiva (Presidente)',
-      sub: 'Presupuesto vs Gasto Real en Tiempo Real',
+      sub: 'Presupuesto vs Gasto Real y Edición de Partidas',
       icon: BarChart3,
       color: '#0D4F8B',
       visible: permissions.canViewExecutiveSummary
@@ -1222,6 +1453,166 @@ export default function App() {
         </div>
       )}
 
+      {/* MODAL 1: ADVERTENCIA Y ACEPTACIÓN DE SOBREGIRO AL SOLICITAR PAGO */}
+      {overdraftRequestModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl border-2 border-red-600">
+            <div className="bg-gradient-to-r from-red-700 via-[#EE2743] to-[#F37338] p-5 text-white flex items-center gap-3">
+              <ShieldAlert className="w-10 h-10 shrink-0" />
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-widest bg-black/30 px-2 py-0.5 rounded">
+                  Advertencia de Sobregiro Presupuestal
+                </span>
+                <h3 className="text-xl font-black mt-1">¡EL PRESUPUESTO SE VA A SOBREGIRAR!</h3>
+              </div>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-slate-700">
+                La solicitud de pago para <strong>{overdraftRequestModal.proveedor}</strong> supera el saldo disponible en la partida <strong>{overdraftRequestModal.categoria}</strong>. ¿Deseas aceptar la responsabilidad del sobregiro e ingresar la solicitud?
+              </p>
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4 space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-slate-600">Presupuesto Autorizado ({overdraftRequestModal.categoria}):</span>
+                  <span className="font-bold">{formatCurrency(overdraftRequestModal.presupuestoRubro)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-600">Saldo Disponible Actual:</span>
+                  <span className="font-bold text-emerald-700">{formatCurrency(overdraftRequestModal.disponibleRubro)}</span>
+                </div>
+                <div className="flex justify-between border-t border-red-200 pt-2">
+                  <span className="text-red-700 font-bold">Monto que estás solicitando:</span>
+                  <span className="font-black text-red-700">{formatCurrency(overdraftRequestModal.monto)}</span>
+                </div>
+                <div className="flex justify-between text-xs bg-red-600 text-white px-3 py-2 rounded-lg font-black">
+                  <span>Monto del Sobregiro a Generar:</span>
+                  <span>- {formatCurrency(overdraftRequestModal.exceso)}</span>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setOverdraftRequestModal(null)}
+                  className="px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700"
+                >
+                  Cancelar y Corregir Monto
+                </button>
+                <button
+                  type="button"
+                  onClick={() => commitExpenseToDatabase(overdraftRequestModal, true)}
+                  className="px-5 py-2.5 rounded-xl text-xs font-black bg-red-600 hover:bg-red-700 text-white shadow-lg"
+                >
+                  Aceptar Sobregiro y Enviar Solicitud
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: CONFIRMACIÓN DEL PRESIDENTE PARA FIRMAR UN SOBREGIRO */}
+      {presidentOverdraftSignModal && (
+        <div className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl border-2 border-red-600">
+            <div className="bg-gradient-to-r from-slate-900 via-red-800 to-red-600 p-5 text-white flex items-center gap-3">
+              <KeyRound className="w-10 h-10 text-[#F5D34B] shrink-0" />
+              <div>
+                <span className="text-[10px] font-bold uppercase tracking-widest bg-black/40 px-2 py-0.5 rounded text-[#F5D34B]">
+                  Confirmación Ejecutiva de Presidencia
+                </span>
+                <h3 className="text-lg font-black mt-1">AUTORIZACIÓN DE SOBREGIRO PRESUPUESTARIO</h3>
+              </div>
+            </div>
+            <div className="p-6 space-y-4">
+              <p className="text-sm text-slate-700">
+                Presidente: El pago <strong>{presidentOverdraftSignModal.gasto.id}</strong> a favor de <strong>{presidentOverdraftSignModal.gasto.proveedor}</strong> excede el presupuesto de la partida <strong>{presidentOverdraftSignModal.gasto.categoria}</strong>. Al firmarlo, el rubro quedará en números rojos en el Reporte Ejecutivo.
+              </p>
+              <div className="bg-red-50 border border-red-200 rounded-xl p-4 space-y-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-slate-600">Presupuesto de la Partida:</span>
+                  <span className="font-bold">{formatCurrency(presidentOverdraftSignModal.presupuestoRubro)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-600">Monto de este Pago por Firmar:</span>
+                  <span className="font-black text-red-700">{formatCurrency(presidentOverdraftSignModal.gasto.monto)}</span>
+                </div>
+                <div className="flex justify-between border-t border-red-200 pt-2">
+                  <span className="text-slate-700 font-bold">Nuevo Total Ejercido en Partida:</span>
+                  <span className="font-black text-red-700">{formatCurrency(presidentOverdraftSignModal.nuevoTotalPagadoRubro)}</span>
+                </div>
+                <div className="flex justify-between text-xs bg-red-600 text-white px-3 py-2 rounded-lg font-black">
+                  <span>Sobregiro Total Autorizado:</span>
+                  <span>- {formatCurrency(presidentOverdraftSignModal.excesoTotal)}</span>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setPresidentOverdraftSignModal(null)}
+                  className="px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700"
+                >
+                  Cancelar Firma
+                </button>
+                <button
+                  type="button"
+                  onClick={() => executePresidentSignature(presidentOverdraftSignModal.gasto.id, true)}
+                  className="px-5 py-2.5 rounded-xl text-xs font-black bg-red-600 hover:bg-red-700 text-white shadow-lg flex items-center gap-1.5"
+                >
+                  <ShieldCheck className="w-4 h-4" />
+                  Aceptar Sobregiro y Estampar Firma Digital
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 3: EDICIÓN DE PARTIDA PRESUPUESTAL (EXCLUSIVO PRESIDENTE) */}
+      {editRubroModal && permissions.canEditBudgetAmounts && (
+        <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl max-w-md w-full overflow-hidden shadow-2xl border border-slate-200 p-6 space-y-4">
+            <div className="flex items-center gap-3 text-[#0D4F8B]">
+              <Edit3 className="w-7 h-7 shrink-0" />
+              <div>
+                <span className="text-[10px] font-black uppercase tracking-wider text-[#118A96]">Facultad Exclusiva de Presidencia</span>
+                <h3 className="text-lg font-black text-slate-900">Editar Presupuesto de Partida</h3>
+                <p className="text-xs text-slate-500">Rubro: <strong>{editRubroModal.categoria}</strong></p>
+              </div>
+            </div>
+            <form onSubmit={handleSaveEditedRubroAmount} className="space-y-4">
+              <div>
+                <label className="text-xs font-bold text-slate-600 uppercase">Nuevo Monto Autorizado (MXN) *</label>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={editRubroAmount}
+                  onChange={(e) => setEditRubroAmount(e.target.value)}
+                  className="w-full mt-1.5 px-3.5 py-2.5 border border-slate-300 rounded-xl text-base font-black text-[#0D4F8B] focus:outline-none focus:border-[#0D4F8B]"
+                  required
+                />
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditRubroModal(null);
+                    setEditRubroAmount('');
+                  }}
+                  className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 text-slate-700"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 rounded-xl text-xs font-black bg-[#0D4F8B] hover:bg-[#093b69] text-white"
+                >
+                  Guardar Nuevo Presupuesto
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {passwordModalUser && (
         <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl max-w-md w-full overflow-hidden shadow-2xl border border-slate-200 p-6 space-y-4">
@@ -1234,7 +1625,7 @@ export default function App() {
             </div>
             <form onSubmit={handleSaveNewPassword} className="space-y-4">
               <div>
-                <label className="text-xs font-bold text-slate-600 uppercase">Nueva Contraseña *</label>
+                <label className="text-xs font-bold text-slate-600 uppercase">Nueva Contraseña (mín. 6 caracteres) *</label>
                 <input
                   type="text"
                   placeholder="Ingresa la nueva contraseña"
@@ -1329,51 +1720,6 @@ export default function App() {
         </div>
       )}
 
-      {blockedModal && (
-        <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full overflow-hidden shadow-2xl border-2 border-red-600">
-            <div className="bg-gradient-to-r from-[#9B1B60] via-[#EE2743] to-[#F37338] p-5 text-white flex items-center gap-3">
-              <ShieldAlert className="w-10 h-10 shrink-0" />
-              <div>
-                <span className="text-[10px] font-bold uppercase tracking-widest bg-black/30 px-2 py-0.5 rounded">Candado Presupuestal MGO Activo</span>
-                <h3 className="text-xl font-black mt-1">PAGO RECHAZADO POR EXCEDER PRESUPUESTO</h3>
-              </div>
-            </div>
-            <div className="p-6 space-y-4">
-              <p className="text-sm text-slate-600">
-                El sistema de <strong>MGO Events</strong> bloqueó automáticamente esta solicitud hacia <strong>{blockedModal.proveedor}</strong> porque supera el saldo disponible en el rubro <strong>{blockedModal.categoria}</strong>.
-              </p>
-              <div className="bg-red-50 border border-red-200 rounded-xl p-4 space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-slate-600">Presupuesto del Rubro ({blockedModal.categoria}):</span>
-                  <span className="font-bold">{formatCurrency(blockedModal.presupuestoRubro)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-600">Saldo Disponible en el Rubro:</span>
-                  <span className="font-bold text-emerald-700">{formatCurrency(blockedModal.disponibleRubro)}</span>
-                </div>
-                <div className="flex justify-between border-t border-red-200 pt-2">
-                  <span className="text-red-700 font-bold">Monto que se intentó registrar:</span>
-                  <span className="font-black text-red-700">{formatCurrency(blockedModal.montoIntentado)}</span>
-                </div>
-                <div className="flex justify-between text-xs bg-red-600 text-white px-3 py-1.5 rounded-lg font-bold">
-                  <span>Excedente No Autorizado:</span>
-                  <span>+ {formatCurrency(blockedModal.exceso)}</span>
-                </div>
-              </div>
-              <div className="flex justify-end">
-                <button
-                  onClick={() => setBlockedModal(null)}
-                  className="bg-slate-900 hover:bg-slate-800 text-white font-bold px-6 py-2.5 rounded-xl text-sm"
-                >
-                  Entendido, Ajustar Monto
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
       <div className="bg-[#0D4F8B] text-white text-xs py-2 px-4 border-b border-white/10">
         <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">
@@ -1386,7 +1732,7 @@ export default function App() {
             </button>
             <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full font-semibold bg-emerald-500/20 text-emerald-200 border border-emerald-400/30">
               <Cloud className="w-3.5 h-3.5" />
-              {cloudStatus === 'synced' ? 'Firebase Cloud Conectado' : 'Sincronización Activa'}
+              {cloudStatus === 'synced' ? 'Firebase Cloud Encriptado' : 'Sincronización Activa'}
             </span>
           </div>
 
@@ -1419,7 +1765,9 @@ export default function App() {
             <div className="bg-slate-100 border border-slate-300 rounded-xl px-3 py-1.5 flex items-center gap-2">
               <Calendar className="w-4 h-4 text-[#118A96]" />
               <div>
-                <div className="text-[10px] font-bold uppercase text-slate-500">Evento en Trabajo</div>
+                <div className="text-[10px] font-bold uppercase text-slate-500">
+                  {loggedInUser.rol === 'PROJECT_MANAGER' ? 'Mis Eventos Asignados' : 'Evento en Trabajo'}
+                </div>
                 <select
                   value={selectedEvent?.id || ''}
                   onChange={(e) => {
@@ -1435,9 +1783,9 @@ export default function App() {
                   {!selectedEvent && (
                     <option value="">-- Creando Evento Nuevo desde Cero --</option>
                   )}
-                  {events.map((ev) => (
+                  {accessibleEvents.map((ev) => (
                     <option key={ev.id} value={ev.id}>
-                      {ev.nombre} ({ev.sedes.length} {ev.sedes.length === 1 ? 'ciudad' : 'ciudades'})
+                      {ev.nombre} (Resp: {ev.responsable})
                     </option>
                   ))}
                   <option value="__NEW__">+ Iniciar Otro Evento Nuevo desde Cero...</option>
@@ -1512,7 +1860,7 @@ export default function App() {
               <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-[#F5D34B]">
                 <span>{selectedEvent.estatus}</span>
                 <span>•</span>
-                <span>Responsable: {selectedEvent.responsable}</span>
+                <span>Project Manager Asignado: {selectedEvent.responsable}</span>
                 <span>•</span>
                 <span>{selectedEvent.fechaInicio} al {selectedEvent.fechaFin}</span>
               </div>
@@ -1546,9 +1894,21 @@ export default function App() {
                 <div className="text-[10px] uppercase text-white/75 font-bold">En Trámite de Firma</div>
                 <div className="text-lg font-black text-orange-200 mt-0.5">{formatCurrency(financialMetrics.totalEnAutorizacion)}</div>
               </div>
-              <div className="bg-emerald-950/60 backdrop-blur-sm p-3 rounded-xl border border-emerald-400/40">
-                <div className="text-[10px] uppercase text-emerald-300 font-bold">Ahorro / Disponible Real</div>
-                <div className="text-lg font-black text-emerald-300 mt-0.5">{formatCurrency(financialMetrics.ahorroSoloPagado)}</div>
+              <div className={`backdrop-blur-sm p-3 rounded-xl border ${
+                financialMetrics.ahorroSoloPagado < 0
+                  ? 'bg-red-950/80 border-red-400'
+                  : 'bg-emerald-950/60 border-emerald-400/40'
+              }`}>
+                <div className={`text-[10px] uppercase font-bold ${
+                  financialMetrics.ahorroSoloPagado < 0 ? 'text-red-300' : 'text-emerald-300'
+                }`}>
+                  {financialMetrics.ahorroSoloPagado < 0 ? 'SOBREGIRO ACUMULADO' : 'Ahorro / Disponible Real'}
+                </div>
+                <div className={`text-lg font-black mt-0.5 ${
+                  financialMetrics.ahorroSoloPagado < 0 ? 'text-red-300' : 'text-emerald-300'
+                }`}>
+                  {formatCurrency(financialMetrics.ahorroSoloPagado)}
+                </div>
               </div>
             </div>
           </div>
@@ -1568,6 +1928,9 @@ export default function App() {
           </div>
         )}
 
+        {/* =====================================================================
+            MÓDULO 1: CREACIÓN DE EVENTO Y TABLA DE PARTIDAS (EDICIÓN PRESIDENTE)
+        ===================================================================== */}
         {activeModule === 'CREACION_EVENTO' && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1634,10 +1997,10 @@ export default function App() {
                     </div>
                   </div>
                   <div>
-                    <label className="text-xs font-bold text-slate-600">Project Manager Responsable</label>
+                    <label className="text-xs font-bold text-slate-600">Project Manager Asignado *</label>
                     <select
-                      disabled={isStep1AButtonLocked}
-                      value={newEvtResp}
+                      disabled={isStep1AButtonLocked || loggedInUser.rol === 'PROJECT_MANAGER'}
+                      value={loggedInUser.rol === 'PROJECT_MANAGER' ? loggedInUser.nombre : newEvtResp}
                       onChange={(e) => setNewEvtResp(e.target.value)}
                       className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-xl bg-white disabled:bg-slate-100"
                     >
@@ -1807,7 +2170,7 @@ export default function App() {
                   1C. Rubros y Categorías de Presupuesto
                 </div>
                 <p className="text-xs text-slate-500 mb-3">
-                  El presupuesto inicia en <strong>$0.00</strong>. Agrega cada rubro autorizado para este evento.
+                  Agrega rubros nuevos al presupuesto. <strong>Solo el Presidente</strong> puede editar el monto de partidas ya existentes.
                 </p>
 
                 <div className="flex flex-wrap gap-1 mb-3">
@@ -1876,11 +2239,11 @@ export default function App() {
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
                 <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-slate-50">
                   <div>
-                    <h3 className="font-black text-slate-900">Presupuesto Cargado por Rubro — {selectedEvent.nombre}</h3>
+                    <h3 className="font-black text-slate-900">Partidas Presupuestales del Evento — {selectedEvent.nombre}</h3>
                     <p className="text-xs text-slate-500">
-                      {selectedEvent.rubrosPresupuesto.length === 0
-                        ? 'Sin rubros preestablecidos. Agrega el primer rubro en el recuadro 1C.'
-                        : 'Rubros dados de alta para controlar los pagos de este evento.'}
+                      {permissions.canEditBudgetAmounts
+                        ? 'Modo Presidente Activo: Puedes editar directamente el monto de cualquier partida.'
+                        : 'Partidas autorizadas. Solo Presidencia puede modificar los montos asignados.'}
                     </p>
                   </div>
                   <div className="text-right">
@@ -1898,15 +2261,35 @@ export default function App() {
                           <th className="py-3 px-4 text-left">Descripción</th>
                           <th className="py-3 px-4 text-right">Presupuesto Asignado</th>
                           <th className="py-3 px-4 text-right">Saldo Disponible</th>
+                          {permissions.canEditBudgetAmounts && (
+                            <th className="py-3 px-4 text-center">Edición (Presidente)</th>
+                          )}
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-200">
                         {financialMetrics.porRubro.map((r) => (
-                          <tr key={r.id} className="hover:bg-slate-50">
+                          <tr key={r.id} className={r.isOverdraft ? 'bg-red-50/70' : 'hover:bg-slate-50'}>
                             <td className="py-3 px-4 font-bold text-slate-900">{r.categoria}</td>
                             <td className="py-3 px-4 text-xs text-slate-500">{r.descripcion}</td>
                             <td className="py-3 px-4 text-right font-black text-[#0D4F8B]">{formatCurrency(r.presupuesto)}</td>
-                            <td className="py-3 px-4 text-right font-bold text-emerald-700">{formatCurrency(r.disponibleRubro)}</td>
+                            <td className={`py-3 px-4 text-right font-black ${r.disponibleRubro < 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+                              {formatCurrency(r.disponibleRubro)}
+                            </td>
+                            {permissions.canEditBudgetAmounts && (
+                              <td className="py-3 px-4 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditRubroModal(r);
+                                    setEditRubroAmount(String(r.presupuesto));
+                                  }}
+                                  className="px-3 py-1 rounded-lg text-xs font-black bg-[#0D4F8B]/10 hover:bg-[#0D4F8B] text-[#0D4F8B] hover:text-white inline-flex items-center gap-1 transition"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                  Editar Monto
+                                </button>
+                              </td>
+                            )}
                           </tr>
                         ))}
                       </tbody>
@@ -1918,6 +2301,9 @@ export default function App() {
           </div>
         )}
 
+        {/* =====================================================================
+            MÓDULO 2: GASTOS Y AUTORIZACIONES (RESTRICCIÓN PM + AVISO SOBREGIRO)
+        ===================================================================== */}
         {activeModule === 'GASTOS_AUTORIZACION' && selectedEvent && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -1929,132 +2315,144 @@ export default function App() {
                   </div>
                 </div>
                 <p className="text-xs text-slate-500 mb-4">
-                  Solicitante activo: <strong>{loggedInUser.nombre} ({ROLE_LABELS[loggedInUser.rol]})</strong>. Tienes acceso a todas las cuentas y tarjetas dadas de alta.
+                  Solicitante: <strong>{loggedInUser.nombre} ({ROLE_LABELS[loggedInUser.rol]})</strong>. Evento asignado a: <strong>{selectedEvent.responsable}</strong>.
                 </p>
 
-                <form onSubmit={handleRegisterExpense} className="space-y-3 text-sm">
-                  <div className="grid grid-cols-2 gap-2">
+                {!canUserRequestPaymentInCurrentEvent ? (
+                  <div className="p-4 rounded-xl bg-red-50 border border-red-200 text-red-800 text-xs space-y-1.5">
+                    <div className="font-black flex items-center gap-1.5">
+                      <Lock className="w-4 h-4 text-red-600" />
+                      Evento No Asignado a tu Perfil
+                    </div>
+                    <p>
+                      Los usuarios con rol <strong>Project Manager</strong> únicamente pueden solicitar pagos en los eventos a los cuales están asignados como responsables (este evento está asignado a <strong>{selectedEvent.responsable}</strong>).
+                    </p>
+                  </div>
+                ) : (
+                  <form onSubmit={handleRegisterExpense} className="space-y-3 text-sm">
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-xs font-bold text-slate-600">Ciudad Sede</label>
+                        <select
+                          value={gastoCiudad || selectedEvent.sedes[0]?.ciudad || ''}
+                          onChange={(e) => {
+                            setGastoCiudad(e.target.value);
+                            setGastoHotel('');
+                          }}
+                          className="w-full mt-1 px-2.5 py-2 border border-slate-300 rounded-xl text-xs bg-white font-semibold"
+                        >
+                          {selectedEvent.sedes.length === 0 && <option value="Sede General">Sede General</option>}
+                          {selectedEvent.sedes.map((s) => (
+                            <option key={s.id} value={s.ciudad}>{s.ciudad}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-xs font-bold text-slate-600">Hotel Sede</label>
+                        <select
+                          value={gastoHotel || activeSedeObj?.hoteles[0] || ''}
+                          onChange={(e) => setGastoHotel(e.target.value)}
+                          className="w-full mt-1 px-2.5 py-2 border border-slate-300 rounded-xl text-xs bg-white font-semibold"
+                        >
+                          {(activeSedeObj?.hoteles?.length ? activeSedeObj.hoteles : ['Hotel General']).map((h, i) => (
+                            <option key={i} value={h}>{h}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
                     <div>
-                      <label className="text-xs font-bold text-slate-600">Ciudad Sede</label>
+                      <label className="text-xs font-bold text-slate-600">Rubro del Presupuesto *</label>
                       <select
-                        value={gastoCiudad || selectedEvent.sedes[0]?.ciudad || ''}
-                        onChange={(e) => {
-                          setGastoCiudad(e.target.value);
-                          setGastoHotel('');
-                        }}
-                        className="w-full mt-1 px-2.5 py-2 border border-slate-300 rounded-xl text-xs bg-white font-semibold"
+                        value={gastoCategoria || selectedEvent.rubrosPresupuesto[0]?.categoria || ''}
+                        onChange={(e) => setGastoCategoria(e.target.value)}
+                        className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-xl bg-white font-bold text-[#0D4F8B]"
                       >
-                        {selectedEvent.sedes.length === 0 && <option value="Sede General">Sede General</option>}
-                        {selectedEvent.sedes.map((s) => (
-                          <option key={s.id} value={s.ciudad}>{s.ciudad}</option>
+                        {financialMetrics.porRubro.length === 0 && (
+                          <option value="">-- Sin rubros cargados en Paso 1C --</option>
+                        )}
+                        {financialMetrics.porRubro.map((r) => (
+                          <option key={r.id} value={r.categoria}>
+                            {r.categoria} (Disp: {formatCurrency(r.disponibleRubro)})
+                          </option>
                         ))}
                       </select>
                     </div>
+
                     <div>
-                      <label className="text-xs font-bold text-slate-600">Hotel Sede</label>
-                      <select
-                        value={gastoHotel || activeSedeObj?.hoteles[0] || ''}
-                        onChange={(e) => setGastoHotel(e.target.value)}
-                        className="w-full mt-1 px-2.5 py-2 border border-slate-300 rounded-xl text-xs bg-white font-semibold"
-                      >
-                        {(activeSedeObj?.hoteles?.length ? activeSedeObj.hoteles : ['Hotel General']).map((h, i) => (
-                          <option key={i} value={h}>{h}</option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-bold text-slate-600">Rubro del Presupuesto *</label>
-                    <select
-                      value={gastoCategoria || selectedEvent.rubrosPresupuesto[0]?.categoria || ''}
-                      onChange={(e) => setGastoCategoria(e.target.value)}
-                      className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-xl bg-white font-bold text-[#0D4F8B]"
-                    >
-                      {financialMetrics.porRubro.length === 0 && (
-                        <option value="">-- Sin rubros cargados en Paso 1C --</option>
-                      )}
-                      {financialMetrics.porRubro.map((r) => (
-                        <option key={r.id} value={r.categoria}>
-                          {r.categoria} (Disp: {formatCurrency(r.disponibleRubro)})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-bold text-slate-600">Proveedor o Beneficiario *</label>
-                    <input
-                      type="text"
-                      placeholder="Ej. Aeroméxico / Holiday Inn / Alamo"
-                      value={gastoProveedor}
-                      onChange={(e) => setGastoProveedor(e.target.value)}
-                      className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-xl"
-                      required
-                    />
-                  </div>
-
-                  <div>
-                    <label className="text-xs font-bold text-slate-600">Concepto del Pago *</label>
-                    <input
-                      type="text"
-                      placeholder="Descripción del pago solicitado"
-                      value={gastoConcepto}
-                      onChange={(e) => setGastoConcepto(e.target.value)}
-                      className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-xl"
-                      required
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="text-xs font-bold text-slate-600">Monto Total (MXN) *</label>
+                      <label className="text-xs font-bold text-slate-600">Proveedor o Beneficiario *</label>
                       <input
-                        type="number"
-                        step="0.01"
-                        placeholder="0.00"
-                        value={gastoMonto}
-                        onChange={(e) => setGastoMonto(e.target.value)}
-                        className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-xl font-black text-slate-900"
+                        type="text"
+                        placeholder="Ej. Aeroméxico / Holiday Inn / Alamo"
+                        value={gastoProveedor}
+                        onChange={(e) => setGastoProveedor(e.target.value)}
+                        className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-xl"
                         required
                       />
                     </div>
+
                     <div>
-                      <label className="text-xs font-bold text-slate-600">Método de Pago</label>
+                      <label className="text-xs font-bold text-slate-600">Concepto del Pago *</label>
+                      <input
+                        type="text"
+                        placeholder="Descripción del pago solicitado"
+                        value={gastoConcepto}
+                        onChange={(e) => setGastoConcepto(e.target.value)}
+                        className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-xl"
+                        required
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-xs font-bold text-slate-600">Monto Total (MXN) *</label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          placeholder="0.00"
+                          value={gastoMonto}
+                          onChange={(e) => setGastoMonto(e.target.value)}
+                          className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-xl font-black text-slate-900"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs font-bold text-slate-600">Método de Pago</label>
+                        <select
+                          value={gastoFormaPago}
+                          onChange={(e) => setGastoFormaPago(e.target.value)}
+                          className="w-full mt-1 px-2.5 py-2 border border-slate-300 rounded-xl text-xs bg-white font-bold"
+                        >
+                          <option value="Transferencia">Transferencia (Cheques)</option>
+                          <option value="Tarjeta Corporativa">Tarjeta de Crédito</option>
+                          <option value="Efectivo / Reembolso">Efectivo / Reembolso</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs font-bold text-slate-600">Cuenta de Banco o Tarjeta (Todas Disponibles)</label>
                       <select
-                        value={gastoFormaPago}
-                        onChange={(e) => setGastoFormaPago(e.target.value)}
-                        className="w-full mt-1 px-2.5 py-2 border border-slate-300 rounded-xl text-xs bg-white font-bold"
+                        value={gastoCuenta || accounts[0]?.nombre || ''}
+                        onChange={(e) => setGastoCuenta(e.target.value)}
+                        className="w-full mt-1 px-2.5 py-2 border border-slate-300 rounded-xl text-xs bg-white font-semibold"
                       >
-                        <option value="Transferencia">Transferencia (Cheques)</option>
-                        <option value="Tarjeta Corporativa">Tarjeta de Crédito</option>
-                        <option value="Efectivo / Reembolso">Efectivo / Reembolso</option>
+                        {accounts.map((c) => (
+                          <option key={c.id} value={c.nombre}>
+                            {c.nombre} — {c.bancoEmisor} ({c.tipoCuenta} • {c.pais})
+                          </option>
+                        ))}
                       </select>
                     </div>
-                  </div>
 
-                  <div>
-                    <label className="text-xs font-bold text-slate-600">Cuenta de Banco o Tarjeta (Todas Disponibles)</label>
-                    <select
-                      value={gastoCuenta || accounts[0]?.nombre || ''}
-                      onChange={(e) => setGastoCuenta(e.target.value)}
-                      className="w-full mt-1 px-2.5 py-2 border border-slate-300 rounded-xl text-xs bg-white font-semibold"
+                    <button
+                      type="submit"
+                      className="w-full bg-gradient-to-r from-[#9B1B60] to-[#EE2743] hover:opacity-95 text-white font-black py-3 rounded-xl shadow-md transition"
                     >
-                      {accounts.map((c) => (
-                        <option key={c.id} value={c.nombre}>
-                          {c.nombre} — {c.bancoEmisor} ({c.tipoCuenta} • {c.pais})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <button
-                    type="submit"
-                    className="w-full bg-gradient-to-r from-[#9B1B60] to-[#EE2743] hover:opacity-95 text-white font-black py-3 rounded-xl shadow-md transition"
-                  >
-                    Solicitar Pago (Validar vs Presupuesto)
-                  </button>
-                </form>
+                      Solicitar Pago
+                    </button>
+                  </form>
+                )}
               </div>
 
               <div className="lg:col-span-2 bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col">
@@ -2090,9 +2488,25 @@ export default function App() {
                       {selectedEvent.gastos.map((g) => {
                         const listasLasDosFirmas = g.authDirOp && g.authDirGen;
                         return (
-                          <tr key={g.id} className={g.firmaPresidente ? 'bg-white' : 'bg-amber-50/40'}>
+                          <tr
+                            key={g.id}
+                            className={
+                              g.esSobregiro
+                                ? 'bg-red-50/70'
+                                : g.firmaPresidente
+                                ? 'bg-white'
+                                : 'bg-amber-50/40'
+                            }
+                          >
                             <td className="py-3 px-3">
-                              <div className="font-black text-slate-900">{g.id}</div>
+                              <div className="font-black text-slate-900 flex items-center gap-1">
+                                {g.id}
+                                {g.esSobregiro && (
+                                  <span className="px-1.5 py-0.5 rounded bg-red-600 text-white text-[9px] font-black uppercase">
+                                    Sobregiro
+                                  </span>
+                                )}
+                              </div>
                               <div className="text-[11px] font-semibold text-[#118A96]">{g.sedeCiudad}</div>
                               <div className="text-[10px] text-slate-500">{g.hotel}</div>
                             </td>
@@ -2107,7 +2521,7 @@ export default function App() {
                               <div className="font-bold text-slate-800">{g.formaPago}</div>
                               <div className="text-[11px] text-slate-500">{g.cuenta}</div>
                             </td>
-                            <td className="py-3 px-3 text-right font-black text-sm text-slate-900">
+                            <td className={`py-3 px-3 text-right font-black text-sm ${g.esSobregiro ? 'text-red-700' : 'text-slate-900'}`}>
                               {formatCurrency(g.monto)}
                             </td>
 
@@ -2147,9 +2561,16 @@ export default function App() {
 
                             <td className="py-3 px-3 text-center">
                               {g.firmaPresidente ? (
-                                <div className="inline-flex flex-col items-center bg-[#0D4F8B]/10 border border-[#0D4F8B]/30 px-2.5 py-1 rounded-lg">
-                                  <span className="text-[10px] font-black text-[#0D4F8B] flex items-center gap-1">
-                                    <ShieldCheck className="w-3.5 h-3.5" /> FIRMADO Y PAGADO
+                                <div className={`inline-flex flex-col items-center px-2.5 py-1 rounded-lg border ${
+                                  g.esSobregiro
+                                    ? 'bg-red-100 border-red-300'
+                                    : 'bg-[#0D4F8B]/10 border-[#0D4F8B]/30'
+                                }`}>
+                                  <span className={`text-[10px] font-black flex items-center gap-1 ${
+                                    g.esSobregiro ? 'text-red-700' : 'text-[#0D4F8B]'
+                                  }`}>
+                                    <ShieldCheck className="w-3.5 h-3.5" />
+                                    {g.esSobregiro ? 'FIRMADO CON SOBREGIRO' : 'FIRMADO Y PAGADO'}
                                   </span>
                                   <span className="text-[9px] font-mono text-slate-500">{g.selloDigital}</span>
                                 </div>
@@ -2159,7 +2580,9 @@ export default function App() {
                                   onClick={() => handleToggleAuth(g.id, 'PRESIDENTE')}
                                   className={`px-3 py-1.5 rounded-lg font-black inline-flex items-center gap-1.5 transition ${
                                     listasLasDosFirmas && permissions.canPresidentSign
-                                      ? 'bg-gradient-to-r from-[#0D4F8B] to-[#118A96] text-white shadow hover:opacity-95'
+                                      ? g.esSobregiro
+                                        ? 'bg-red-600 hover:bg-red-700 text-white shadow'
+                                        : 'bg-gradient-to-r from-[#0D4F8B] to-[#118A96] text-white shadow hover:opacity-95'
                                       : 'bg-slate-200 text-slate-400 cursor-not-allowed'
                                   }`}
                                 >
@@ -2168,7 +2591,11 @@ export default function App() {
                                   ) : (
                                     <Lock className="w-3.5 h-3.5" />
                                   )}
-                                  {listasLasDosFirmas ? 'Firmar Pago' : 'Faltan Firmas'}
+                                  {listasLasDosFirmas
+                                    ? g.esSobregiro
+                                      ? 'Firmar Sobregiro'
+                                      : 'Firmar Pago'
+                                    : 'Faltan Firmas'}
                                 </button>
                               )}
                             </td>
@@ -2183,6 +2610,9 @@ export default function App() {
           </div>
         )}
 
+        {/* =====================================================================
+            MÓDULO 3: CONSULTA EJECUTIVA (RUBROS EXCEDIDOS EN ROJO + EDICIÓN PRESIDENTE)
+        ===================================================================== */}
         {activeModule === 'CONSULTA_PRESIDENTE' && permissions.canViewExecutiveSummary && selectedEvent && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -2223,14 +2653,29 @@ export default function App() {
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
               <div className="p-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-4 bg-slate-50">
                 <div>
-                  <span className="text-[11px] font-black uppercase tracking-wider text-[#118A96]">Vista Exclusiva de Presidencia en Tiempo Real</span>
+                  <span className="text-[11px] font-black uppercase tracking-wider text-[#118A96]">
+                    Vista Exclusiva de Presidencia en Tiempo Real
+                  </span>
                   <h3 className="text-lg font-black text-slate-900">
                     Cuadre de Cierre por Rubro: Presupuesto vs. Gasto Real — {selectedEvent.nombre}
                   </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Los rubros con sobregiro se destacan automáticamente en <strong>color rojo</strong>. Puedes ajustar cualquier monto presupuestal con el botón <strong>Editar</strong>.
+                  </p>
                 </div>
-                <div className="bg-emerald-50 border border-emerald-200 px-4 py-2 rounded-xl text-right">
-                  <div className="text-[11px] font-bold text-emerald-700 uppercase">Ahorro Neto Logrado al Cierre</div>
-                  <div className="text-xl font-black text-emerald-700">
+                <div className={`px-4 py-2 rounded-xl text-right border ${
+                  financialMetrics.ahorroSoloPagado < 0
+                    ? 'bg-red-50 border-red-300'
+                    : 'bg-emerald-50 border-emerald-200'
+                }`}>
+                  <div className={`text-[11px] font-bold uppercase ${
+                    financialMetrics.ahorroSoloPagado < 0 ? 'text-red-700' : 'text-emerald-700'
+                  }`}>
+                    {financialMetrics.ahorroSoloPagado < 0 ? 'Sobregiro Neto del Evento' : 'Ahorro Neto Logrado al Cierre'}
+                  </div>
+                  <div className={`text-xl font-black ${
+                    financialMetrics.ahorroSoloPagado < 0 ? 'text-red-700' : 'text-emerald-700'
+                  }`}>
                     {formatCurrency(financialMetrics.ahorroSoloPagado)}{' '}
                     ({financialMetrics.presupuestoTotal > 0 ? ((financialMetrics.ahorroSoloPagado / financialMetrics.presupuestoTotal) * 100).toFixed(2) : '0.00'}%)
                   </div>
@@ -2245,41 +2690,90 @@ export default function App() {
                       <th className="py-3.5 px-4 text-right">Presupuesto Autorizado</th>
                       <th className="py-3.5 px-4 text-right">Gasto Real Pagado</th>
                       <th className="py-3.5 px-4 text-right">En Trámite de Firma</th>
-                      <th className="py-3.5 px-4 text-right">Ahorro / Desviación</th>
+                      <th className="py-3.5 px-4 text-right">Ahorro / Sobregiro</th>
                       <th className="py-3.5 px-4 text-center">% Ejercido</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
-                    {financialMetrics.porRubro.map((r) => (
-                      <tr key={r.id} className="hover:bg-slate-50">
-                        <td className="py-3.5 px-4">
-                          <div className="font-black text-slate-900">{r.categoria}</div>
-                          <div className="text-xs text-slate-500">{r.descripcion}</div>
-                        </td>
-                        <td className="py-3.5 px-4 text-right font-bold text-slate-700">{formatCurrency(r.presupuesto)}</td>
-                        <td className="py-3.5 px-4 text-right font-black text-[#0D4F8B]">{formatCurrency(r.pagadoRubro)}</td>
-                        <td className="py-3.5 px-4 text-right font-semibold text-amber-600">{formatCurrency(r.tramiteRubro)}</td>
-                        <td className="py-3.5 px-4 text-right">
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-black text-xs">
-                            <TrendingDown className="w-3.5 h-3.5" />
-                            Ahorro: {formatCurrency(r.ahorroRubro)}
-                          </span>
-                        </td>
-                        <td className="py-3.5 px-4 w-44">
-                          <div className="flex items-center gap-2">
-                            <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden">
-                              <div
-                                className="h-full bg-gradient-to-r from-[#0D4F8B] to-[#118A96]"
-                                style={{ width: `${Math.min(100, r.porcentajeEjercido)}%` }}
-                              />
+                    {financialMetrics.porRubro.map((r) => {
+                      const excedido = r.ahorroRubro < 0;
+                      return (
+                        <tr
+                          key={r.id}
+                          className={excedido ? 'bg-red-50/90 hover:bg-red-100/70' : 'hover:bg-slate-50'}
+                        >
+                          <td className="py-3.5 px-4">
+                            <div className="flex items-center gap-2">
+                              <span className={`font-black ${excedido ? 'text-red-700' : 'text-slate-900'}`}>
+                                {r.categoria}
+                              </span>
+                              {excedido && (
+                                <span className="px-2 py-0.5 rounded bg-red-600 text-white text-[10px] font-black uppercase">
+                                  RUBRO EXCEDIDO
+                                </span>
+                              )}
                             </div>
-                            <span className="text-xs font-bold text-slate-700 w-12 text-right">
-                              {r.porcentajeEjercido.toFixed(1)}%
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                            <div className={`text-xs ${excedido ? 'text-red-600 font-medium' : 'text-slate-500'}`}>
+                              {r.descripcion}
+                            </div>
+                          </td>
+                          <td className="py-3.5 px-4 text-right">
+                            <div className="inline-flex items-center justify-end gap-2">
+                              <span className={`font-bold ${excedido ? 'text-red-800' : 'text-slate-700'}`}>
+                                {formatCurrency(r.presupuesto)}
+                              </span>
+                              {permissions.canEditBudgetAmounts && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditRubroModal(r);
+                                    setEditRubroAmount(String(r.presupuesto));
+                                  }}
+                                  className="p-1.5 rounded-lg bg-[#0D4F8B]/10 hover:bg-[#0D4F8B] text-[#0D4F8B] hover:text-white transition"
+                                  title="Editar monto de esta partida (Exclusivo Presidente)"
+                                >
+                                  <Edit3 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                          <td className={`py-3.5 px-4 text-right font-black ${excedido ? 'text-red-700' : 'text-[#0D4F8B]'}`}>
+                            {formatCurrency(r.pagadoRubro)}
+                          </td>
+                          <td className="py-3.5 px-4 text-right font-semibold text-amber-600">
+                            {formatCurrency(r.tramiteRubro)}
+                          </td>
+                          <td className="py-3.5 px-4 text-right">
+                            {excedido ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-600 text-white font-black text-xs shadow-sm">
+                                <TrendingUp className="w-3.5 h-3.5" />
+                                Sobregiro: {formatCurrency(r.ahorroRubro)}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 font-black text-xs">
+                                <TrendingDown className="w-3.5 h-3.5" />
+                                Ahorro: {formatCurrency(r.ahorroRubro)}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-4 w-44">
+                            <div className="flex items-center gap-2">
+                              <div className="w-full bg-slate-200 h-2.5 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full ${
+                                    excedido ? 'bg-red-600' : 'bg-gradient-to-r from-[#0D4F8B] to-[#118A96]'
+                                  }`}
+                                  style={{ width: `${Math.min(100, r.porcentajeEjercido)}%` }}
+                                />
+                              </div>
+                              <span className={`text-xs font-black w-14 text-right ${excedido ? 'text-red-700' : 'text-slate-700'}`}>
+                                {r.porcentajeEjercido.toFixed(1)}%
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2287,6 +2781,9 @@ export default function App() {
           </div>
         )}
 
+        {/* =====================================================================
+            MÓDULO 4: ADMINISTRACIÓN DE USUARIOS (CONTRASEÑAS ENMASCARADAS)
+        ===================================================================== */}
         {activeModule === 'USUARIOS_ROLES' && permissions.canManageUsers && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
@@ -2295,7 +2792,7 @@ export default function App() {
                 Alta de Usuarios (Exclusivo Presidente)
               </div>
               <p className="text-xs text-slate-500 mb-4">
-                Todo usuario debe contar con correo <strong>@mgoevents.com</strong> y podrá utilizar cualquiera de las cuentas o tarjetas dadas de alta en el sistema.
+                Todo usuario debe contar con correo <strong>@mgoevents.com</strong> y contraseña mínima de 6 caracteres.
               </p>
 
               <form onSubmit={handleAddUser} className="space-y-3 text-sm">
@@ -2322,10 +2819,10 @@ export default function App() {
                   />
                 </div>
                 <div>
-                  <label className="text-xs font-bold text-slate-600">Contraseña de Acceso *</label>
+                  <label className="text-xs font-bold text-slate-600">Contraseña de Acceso (mín. 6 caracteres) *</label>
                   <input
                     type="text"
-                    placeholder="Asignar contraseña inicial"
+                    placeholder="Asignar contraseña segura"
                     value={uPassword}
                     onChange={(e) => setUPassword(e.target.value)}
                     className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-xl font-mono"
@@ -2339,10 +2836,10 @@ export default function App() {
                     onChange={(e) => setURol(e.target.value)}
                     className="w-full mt-1 px-3 py-2 border border-slate-300 rounded-xl bg-white font-bold text-[#0D4F8B]"
                   >
-                    <option value="PROJECT_MANAGER">1. Project Manager (Crear eventos y solicitar pagos)</option>
+                    <option value="PROJECT_MANAGER">1. Project Manager (Solo opera sus eventos asignados)</option>
                     <option value="DIRECTOR">2. Director (1ra Firma + Derechos de PM)</option>
                     <option value="DIRECTOR_GENERAL">3. Director General (2da Firma + Cuentas + Eliminar Eventos)</option>
-                    <option value="PRESIDENTE">4. Presidente (Acceso Total al Sistema)</option>
+                    <option value="PRESIDENTE">4. Presidente (Acceso Total y Edición de Presupuesto)</option>
                   </select>
                 </div>
 
@@ -2359,7 +2856,7 @@ export default function App() {
               <div className="p-4 border-b border-slate-200 bg-slate-50">
                 <h3 className="font-black text-slate-900">Directorio Oficial de Usuarios y Roles (@mgoevents.com)</h3>
                 <p className="text-xs text-slate-500">
-                  Todos los usuarios registrados tienen acceso al catálogo general de cuentas bancarias y tarjetas corporativas.
+                  Por seguridad, las contraseñas permanecen ocultas hasta que presiones el ícono de visualización.
                 </p>
               </div>
               <div className="overflow-x-auto">
@@ -2368,56 +2865,71 @@ export default function App() {
                     <tr>
                       <th className="py-3 px-4 text-left">Usuario / Correo Oficial</th>
                       <th className="py-3 px-4 text-left">Rol Asignado</th>
-                      <th className="py-3 px-4 text-left">Contraseña Actual</th>
+                      <th className="py-3 px-4 text-left">Contraseña</th>
                       <th className="py-3 px-4 text-right">Acciones (Presidente)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
-                    {users.map((u) => (
-                      <tr key={u.id} className="hover:bg-slate-50">
-                        <td className="py-3 px-4">
-                          <div className="font-black text-slate-900">{u.nombre}</div>
-                          <div className="text-xs font-semibold text-[#118A96]">{u.email}</div>
-                          <div className="text-[11px] text-slate-400">{ROLE_RIGHTS_DESCRIPTION[u.rol]}</div>
-                        </td>
-                        <td className="py-3 px-4">
-                          <span className="inline-block px-2.5 py-1 rounded-lg text-xs font-black bg-[#0D4F8B]/10 text-[#0D4F8B]">
-                            {ROLE_LABELS[u.rol]}
-                          </span>
-                        </td>
-                        <td className="py-3 px-4 text-xs font-mono font-bold text-slate-700">{u.password}</td>
-                        <td className="py-3 px-4 text-right">
-                          <div className="inline-flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setPasswordModalUser(u);
-                                setNewPasswordInput(u.password);
-                              }}
-                              className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-100 hover:bg-[#0D4F8B] hover:text-white text-slate-700 inline-flex items-center gap-1 transition"
-                            >
-                              <KeyRound className="w-3.5 h-3.5" />
-                              Cambiar Contraseña
-                            </button>
+                    {users.map((u) => {
+                      const isPassShown = !!visiblePasswordsMap[u.id];
+                      return (
+                        <tr key={u.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-4">
+                            <div className="font-black text-slate-900">{u.nombre}</div>
+                            <div className="text-xs font-semibold text-[#118A96]">{u.email}</div>
+                            <div className="text-[11px] text-slate-400">{ROLE_RIGHTS_DESCRIPTION[u.rol]}</div>
+                          </td>
+                          <td className="py-3 px-4">
+                            <span className="inline-block px-2.5 py-1 rounded-lg text-xs font-black bg-[#0D4F8B]/10 text-[#0D4F8B]">
+                              {ROLE_LABELS[u.rol]}
+                            </span>
+                          </td>
+                          <td className="py-3 px-4 text-xs font-mono font-bold text-slate-700">
+                            <div className="inline-flex items-center gap-2">
+                              <span>{isPassShown ? u.password : '••••••••'}</span>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setVisiblePasswordsMap((prev) => ({ ...prev, [u.id]: !prev[u.id] }))
+                                }
+                                className="text-slate-400 hover:text-slate-700"
+                              >
+                                {isPassShown ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                              </button>
+                            </div>
+                          </td>
+                          <td className="py-3 px-4 text-right">
+                            <div className="inline-flex items-center gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPasswordModalUser(u);
+                                  setNewPasswordInput(u.password);
+                                }}
+                                className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-100 hover:bg-[#0D4F8B] hover:text-white text-slate-700 inline-flex items-center gap-1 transition"
+                              >
+                                <KeyRound className="w-3.5 h-3.5" />
+                                Cambiar Contraseña
+                              </button>
 
-                            <button
-                              type="button"
-                              disabled={u.id === loggedInUser.id}
-                              onClick={() => setDeleteUserModal(u)}
-                              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1 transition ${
-                                u.id === loggedInUser.id
-                                  ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
-                                  : 'bg-red-50 hover:bg-red-600 hover:text-white text-red-600'
-                              }`}
-                              title={u.id === loggedInUser.id ? 'No puedes eliminar tu propio usuario activo' : 'Eliminar usuario'}
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                              Eliminar
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                              <button
+                                type="button"
+                                disabled={u.id === loggedInUser.id}
+                                onClick={() => setDeleteUserModal(u)}
+                                className={`px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1 transition ${
+                                  u.id === loggedInUser.id
+                                    ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
+                                    : 'bg-red-50 hover:bg-red-600 hover:text-white text-red-600'
+                                }`}
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                Eliminar
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2425,6 +2937,9 @@ export default function App() {
           </div>
         )}
 
+        {/* =====================================================================
+            MÓDULO 5: ALTA DE CUENTA DE BANCO O TARJETA (DIR. GENERAL Y PRESIDENTE)
+        ===================================================================== */}
         {activeModule === 'CUENTAS_BANCARIAS' && permissions.canManageBankAccounts && (
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
