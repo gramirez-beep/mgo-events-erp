@@ -4,16 +4,15 @@
     "description": "High Performance Sports Logistics — Control Presupuestal y Firma Digital",
     "start_url": "/",
     "display": "standalone",
-    "background_color": "#020617",
+    "background_color": "#0f172a",
     "theme_color": "#0D4F8B",
     "orientation": "any",
     "icons": [
       {
         "src": "/mgo-icon.svg",
-        "sizes": "any",
+        "sizes": "192x192 512x512 any",
         "type": "image/svg+xml",
         "purpose": "any maskable"
       }
     ]
   }
-  
