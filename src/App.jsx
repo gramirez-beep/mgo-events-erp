@@ -74,7 +74,7 @@ const MGOLogo = ({ size = 'md' }) => {
 };
 
 // ============================================================================
-// 3. JERARQUÍA DE ROLES Y PERMISOS ESTRICTOS (RBAC) — SIN CONTRASEÑAS EN TEXTO
+// 3. JERARQUÍA DE ROLES Y ÚNICO USUARIO INICIAL OFICIAL (PRESIDENTE)
 // ============================================================================
 const ROLE_LABELS = {
   PROJECT_MANAGER: 'Project Manager',
@@ -90,14 +90,27 @@ const ROLE_RIGHTS_DESCRIPTION = {
   PRESIDENTE: 'Acceso total, Edición de Partidas Presupuestales, Firma Digital, Consulta Ejecutiva y Usuarios'
 };
 
-// Las contraseñas ya NO se guardan aquí ni en Firestore; viven encriptadas en Firebase Authentication
+// Único usuario inicial del sistema: gramirez@mgoevents.com (Sin rastro de otros usuarios)
 const INITIAL_USERS = [
-  { id: 'u1', nombre: 'Pepe', cargo: 'Project Manager Operativo', email: 'pepe@mgoevents.com', rol: 'PROJECT_MANAGER', activo: true },
-  { id: 'u2', nombre: 'Manu', cargo: 'Director de Operaciones', email: 'manu@mgoevents.com', rol: 'DIRECTOR', activo: true },
-  { id: 'u3', nombre: 'Clarisa', cargo: 'Directora General', email: 'clarisa@mgoevents.com', rol: 'DIRECTOR_GENERAL', activo: true },
-  { id: 'u4', nombre: 'Presidente MGO', cargo: 'Presidente del Consejo', email: 'presidente@mgoevents.com', rol: 'PRESIDENTE', activo: true },
-  { id: 'u5', nombre: 'Carlos', cargo: 'Project Manager Vuelos y Sedes', email: 'carlos@mgoevents.com', rol: 'PROJECT_MANAGER', activo: true }
+  {
+    id: 'u-pres-gramirez',
+    nombre: 'Guillermo Ramírez',
+    cargo: 'Presidente del Consejo',
+    email: 'gramirez@mgoevents.com',
+    rol: 'PRESIDENTE',
+    activo: true
+  }
 ];
+
+// Lista de correos/IDs de prueba antiguos para purgarlos automáticamente si quedaron en la nube
+const LEGACY_TEST_EMAILS = [
+  'pepe@mgoevents.com',
+  'manu@mgoevents.com',
+  'clarisa@mgoevents.com',
+  'presidente@mgoevents.com',
+  'carlos@mgoevents.com'
+];
+const LEGACY_TEST_IDS = ['u1', 'u2', 'u3', 'u4', 'u5'];
 
 const INITIAL_ACCOUNTS = [
   { id: 'acc-1', nombre: 'MGO Digital', bancoEmisor: 'BBVA México', tipoCuenta: 'Cheques', pais: 'México' },
@@ -115,7 +128,7 @@ const INITIAL_EVENTS = [
     cliente: 'CONADE / Comité Paralímpico',
     fechaInicio: '2026-09-07',
     fechaFin: '2026-09-10',
-    responsable: 'Pepe',
+    responsable: 'Guillermo Ramírez',
     moneda: 'MXN',
     estatus: 'En Cierre / Liquidación',
     sedes: [{ id: 'sede-cdmx', ciudad: 'Ciudad de México', hoteles: ['Holiday Inn Dalí'] }],
@@ -128,22 +141,22 @@ const INITIAL_EVENTS = [
       { id: 'rub-6', categoria: 'Fee del Evento', presupuesto: 20000, descripcion: 'Cargos operativos y gestión' },
     ],
     gastos: [
-      { id: 'R47', fecha: '2026-09-14', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Hospedaje', proveedor: 'Holiday Inn Dali', concepto: 'Inscripciones Paralimpiada', descripcion: 'Hospedaje, alimentos, tomas de corriente, conexion de red y coffee break', monto: 527256.44, formaPago: 'Transferencia', cuenta: 'MGO Digital', pagadoPor: 'Manu', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948201-PRES', estatus: 'Pagado' },
-      { id: 'R48', fecha: '2026-09-02', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Vuelos de Empleados', proveedor: 'Aeromexico', concepto: 'Vuelos MGO', descripcion: 'Clave reserva GNPFIM', monto: 21152.00, formaPago: 'Tarjeta Corporativa', cuenta: 'Clari Amex', pagadoPor: 'Pepe', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948202-PRES', estatus: 'Pagado' },
-      { id: 'R49', fecha: '2026-09-04', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Materiales y Papelería', proveedor: 'Papelerias Bety', concepto: 'Papeleria', descripcion: 'Papelería general para registro', monto: 7793.35, formaPago: 'Tarjeta Corporativa', cuenta: 'Manu 1251', pagadoPor: 'Pepe', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948203-PRES', estatus: 'Pagado' },
-      { id: 'R50', fecha: '2026-09-04', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Materiales y Papelería', proveedor: 'Office Depot', concepto: 'Tintas de impresora', descripcion: '36 cartuchos Impresoras HP', monto: 24174.00, formaPago: 'Tarjeta Corporativa', cuenta: 'Manu 1251', pagadoPor: 'Pepe', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948204-PRES', estatus: 'Pagado' },
-      { id: 'R51', fecha: '2026-09-07', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Materiales y Papelería', proveedor: 'FAMA COLOR', concepto: 'Papeleria', descripcion: '20 Sellos y Pendones oficiales', monto: 11843.02, formaPago: 'Tarjeta Corporativa', cuenta: 'Manu 1251', pagadoPor: 'Pepe', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948205-PRES', estatus: 'Pagado' },
-      { id: 'R52', fecha: '2026-09-03', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Materiales y Papelería', proveedor: 'Mercado Libre', concepto: 'Tintas de impresora', descripcion: '5 Tintas Impresoras Xerox', monto: 16820.29, formaPago: 'Tarjeta Corporativa', cuenta: 'BOFA 9273', pagadoPor: 'Pepe', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948206-PRES', estatus: 'Pagado' },
-      { id: 'R53', fecha: '2026-09-07', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Vuelos de Empleados', proveedor: 'Viva Aerobus', concepto: 'Vuelos Paralimpiada', descripcion: 'Vuelo David, Maria Guadalupe y Leslie', monto: 16080.61, formaPago: 'Tarjeta Corporativa', cuenta: 'Clari Amex', pagadoPor: 'Carlos', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948207-PRES', estatus: 'Pagado' },
-      { id: 'R54', fecha: '2026-09-07', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Vuelos de Empleados', proveedor: 'Aeromexico', concepto: 'Vuelos Paralimpiada', descripcion: 'Vuelo Anaisa, Jose Israel y Diana', monto: 20874.00, formaPago: 'Tarjeta Corporativa', cuenta: 'Clari Amex', pagadoPor: 'Carlos', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948208-PRES', estatus: 'Pagado' },
-      { id: 'R55', fecha: '2026-09-17', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Transporte Terrestre', proveedor: 'Alamo', concepto: 'Inscripciones Guadalajara - Mexico', descripcion: 'Renta vehículo para llevar impresora', monto: 12499.99, formaPago: 'Tarjeta Corporativa', cuenta: 'Amex 4002', pagadoPor: 'Clarisa', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948209-PRES', estatus: 'Pagado' },
-      { id: 'R56', fecha: '2026-09-12', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Transporte Terrestre', proveedor: 'Gasolina', concepto: 'Arturo CONADE', descripcion: 'Transporte para inscripciones', monto: 600.00, formaPago: 'Efectivo / Reembolso', cuenta: 'Cash', pagadoPor: 'Clarisa', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948210-PRES', estatus: 'Pagado' },
-      { id: 'R57', fecha: '2026-09-10', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Materiales y Papelería', proveedor: 'Papeleria', concepto: 'Papeleria Extra', descripcion: 'Insumos urgentes en sede', monto: 691.00, formaPago: 'Efectivo / Reembolso', cuenta: 'Cash', pagadoPor: 'Clarisa', solicitadoPor: 'Pepe', comprobante: 'Recibo', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948211-PRES', estatus: 'Pagado' },
-      { id: 'R58', fecha: '2026-09-06', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Transporte Terrestre', proveedor: 'Casetas', concepto: 'Casetas MGO', descripcion: 'Peajes traslado equipo Guadalajara - CDMX', monto: 2308.00, formaPago: 'Efectivo / Reembolso', cuenta: 'Cash', pagadoPor: 'Clarisa', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948212-PRES', estatus: 'Pagado' },
-      { id: 'R59', fecha: '2026-09-06', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Transporte Terrestre', proveedor: 'Gasolina', concepto: 'Gasolina MGO', descripcion: 'Carga combustible traslado equipo', monto: 4647.85, formaPago: 'Efectivo / Reembolso', cuenta: 'Cash', pagadoPor: 'Clarisa', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948213-PRES', estatus: 'Pagado' },
-      { id: 'R60', fecha: '2026-09-06', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Vuelos de Empleados', proveedor: 'Volaris', concepto: 'Vuelos Manu', descripcion: 'Boleto aéreo supervisión operativa Manu', monto: 2692.00, formaPago: 'Tarjeta Corporativa', cuenta: 'Manu 4610', pagadoPor: 'Manu', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948214-PRES', estatus: 'Pagado' },
-      { id: 'R61-PEND', fecha: '2026-09-18', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Viáticos de Empleados / Perdiem', proveedor: 'Perdiem Staff Operativo', concepto: 'Liquidación Viáticos Cierre CDMX', descripcion: 'Perdiem 6 integrantes staff cierre de evento', monto: 14500.00, formaPago: 'Transferencia', cuenta: 'MGO Digital', pagadoPor: 'Manu', solicitadoPor: 'Pepe', comprobante: 'Recibo', authDirOp: true, authDirGen: false, firmaPresidente: false, selloDigital: null, estatus: 'Pendiente Autorización' },
-      { id: 'R62-PEND', fecha: '2026-09-18', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Fee del Evento', proveedor: 'Auditoria & Logística Deportiva SC', concepto: 'Honorarios Cierre Documental CONADE', descripcion: 'Entrega de carpetas y actas de cierre', monto: 18000.00, formaPago: 'Transferencia', cuenta: 'MGO Digital', pagadoPor: 'Manu', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: false, selloDigital: null, estatus: 'Listo para Firma Presidente' }
+      { id: 'R47', fecha: '2026-09-14', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Hospedaje', proveedor: 'Holiday Inn Dali', concepto: 'Inscripciones Paralimpiada', descripcion: 'Hospedaje, alimentos, tomas de corriente, conexion de red y coffee break', monto: 527256.44, formaPago: 'Transferencia', cuenta: 'MGO Digital', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948201-PRES', estatus: 'Pagado' },
+      { id: 'R48', fecha: '2026-09-02', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Vuelos de Empleados', proveedor: 'Aeromexico', concepto: 'Vuelos MGO', descripcion: 'Clave reserva GNPFIM', monto: 21152.00, formaPago: 'Tarjeta Corporativa', cuenta: 'Clari Amex', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948202-PRES', estatus: 'Pagado' },
+      { id: 'R49', fecha: '2026-09-04', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Materiales y Papelería', proveedor: 'Papelerias Bety', concepto: 'Papeleria', descripcion: 'Papelería general para registro', monto: 7793.35, formaPago: 'Tarjeta Corporativa', cuenta: 'Manu 1251', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948203-PRES', estatus: 'Pagado' },
+      { id: 'R50', fecha: '2026-09-04', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Materiales y Papelería', proveedor: 'Office Depot', concepto: 'Tintas de impresora', descripcion: '36 cartuchos Impresoras HP', monto: 24174.00, formaPago: 'Tarjeta Corporativa', cuenta: 'Manu 1251', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948204-PRES', estatus: 'Pagado' },
+      { id: 'R51', fecha: '2026-09-07', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Materiales y Papelería', proveedor: 'FAMA COLOR', concepto: 'Papeleria', descripcion: '20 Sellos y Pendones oficiales', monto: 11843.02, formaPago: 'Tarjeta Corporativa', cuenta: 'Manu 1251', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948205-PRES', estatus: 'Pagado' },
+      { id: 'R52', fecha: '2026-09-03', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Materiales y Papelería', proveedor: 'Mercado Libre', concepto: 'Tintas de impresora', descripcion: '5 Tintas Impresoras Xerox', monto: 16820.29, formaPago: 'Tarjeta Corporativa', cuenta: 'BOFA 9273', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948206-PRES', estatus: 'Pagado' },
+      { id: 'R53', fecha: '2026-09-07', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Vuelos de Empleados', proveedor: 'Viva Aerobus', concepto: 'Vuelos Paralimpiada', descripcion: 'Vuelo David, Maria Guadalupe y Leslie', monto: 16080.61, formaPago: 'Tarjeta Corporativa', cuenta: 'Clari Amex', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948207-PRES', estatus: 'Pagado' },
+      { id: 'R54', fecha: '2026-09-07', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Vuelos de Empleados', proveedor: 'Aeromexico', concepto: 'Vuelos Paralimpiada', descripcion: 'Vuelo Anaisa, Jose Israel y Diana', monto: 20874.00, formaPago: 'Tarjeta Corporativa', cuenta: 'Clari Amex', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948208-PRES', estatus: 'Pagado' },
+      { id: 'R55', fecha: '2026-09-17', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Transporte Terrestre', proveedor: 'Alamo', concepto: 'Inscripciones Guadalajara - Mexico', descripcion: 'Renta vehículo para llevar impresora', monto: 12499.99, formaPago: 'Tarjeta Corporativa', cuenta: 'Amex 4002', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948209-PRES', estatus: 'Pagado' },
+      { id: 'R56', fecha: '2026-09-12', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Transporte Terrestre', proveedor: 'Gasolina', concepto: 'Arturo CONADE', descripcion: 'Transporte para inscripciones', monto: 600.00, formaPago: 'Efectivo / Reembolso', cuenta: 'Cash', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948210-PRES', estatus: 'Pagado' },
+      { id: 'R57', fecha: '2026-09-10', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Materiales y Papelería', proveedor: 'Papeleria', concepto: 'Papeleria Extra', descripcion: 'Insumos urgentes en sede', monto: 691.00, formaPago: 'Efectivo / Reembolso', cuenta: 'Cash', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Recibo', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948211-PRES', estatus: 'Pagado' },
+      { id: 'R58', fecha: '2026-09-06', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Transporte Terrestre', proveedor: 'Casetas', concepto: 'Casetas MGO', descripcion: 'Peajes traslado equipo Guadalajara - CDMX', monto: 2308.00, formaPago: 'Efectivo / Reembolso', cuenta: 'Cash', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948212-PRES', estatus: 'Pagado' },
+      { id: 'R59', fecha: '2026-09-06', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Transporte Terrestre', proveedor: 'Gasolina', concepto: 'Gasolina MGO', descripcion: 'Carga combustible traslado equipo', monto: 4647.85, formaPago: 'Efectivo / Reembolso', cuenta: 'Cash', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948213-PRES', estatus: 'Pagado' },
+      { id: 'R60', fecha: '2026-09-06', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Vuelos de Empleados', proveedor: 'Volaris', concepto: 'Vuelos Operativos', descripcion: 'Boleto aéreo supervisión operativa', monto: 2692.00, formaPago: 'Tarjeta Corporativa', cuenta: 'Manu 4610', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-948214-PRES', estatus: 'Pagado' },
+      { id: 'R61-PEND', fecha: '2026-09-18', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Viáticos de Empleados / Perdiem', proveedor: 'Perdiem Staff Operativo', concepto: 'Liquidación Viáticos Cierre CDMX', descripcion: 'Perdiem 6 integrantes staff cierre de evento', monto: 14500.00, formaPago: 'Transferencia', cuenta: 'MGO Digital', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Recibo', authDirOp: true, authDirGen: false, firmaPresidente: false, selloDigital: null, estatus: 'Pendiente Autorización' },
+      { id: 'R62-PEND', fecha: '2026-09-18', sedeCiudad: 'Ciudad de México', hotel: 'Holiday Inn Dalí', categoria: 'Fee del Evento', proveedor: 'Auditoria & Logística Deportiva SC', concepto: 'Honorarios Cierre Documental CONADE', descripcion: 'Entrega de carpetas y actas de cierre', monto: 18000.00, formaPago: 'Transferencia', cuenta: 'MGO Digital', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: false, selloDigital: null, estatus: 'Listo para Firma Presidente' }
     ]
   },
   {
@@ -152,7 +165,7 @@ const INITIAL_EVENTS = [
     cliente: 'CONADE / Institutos Estatales del Deporte',
     fechaInicio: '2026-10-15',
     fechaFin: '2026-11-05',
-    responsable: 'Manu',
+    responsable: 'Guillermo Ramírez',
     moneda: 'MXN',
     estatus: 'En Operación Activa',
     sedes: [
@@ -171,9 +184,9 @@ const INITIAL_EVENTS = [
       { id: 'on-8', categoria: 'Fee del Evento', presupuesto: 650000, descripcion: 'Fee de agencia y operación logística integral MGO Events' },
     ],
     gastos: [
-      { id: 'ON-101', fecha: '2026-10-02', sedeCiudad: 'Guadalajara, Jal.', hotel: 'Hotel RIU Plaza Guadalajara', categoria: 'Hospedaje', proveedor: 'RIU Hotels & Resorts', concepto: 'Anticipo 50% Bloqueo Delegaciones y Jueces', descripcion: '220 habitaciones plan pensión completa', monto: 1250000.00, formaPago: 'Transferencia', cuenta: 'MGO Digital', pagadoPor: 'Manu', solicitadoPor: 'Pepe', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-88101-PRES', estatus: 'Pagado' },
-      { id: 'ON-102', fecha: '2026-10-04', sedeCiudad: 'Monterrey, N.L.', hotel: 'Camino Real Monterrey', categoria: 'Hospedaje', proveedor: 'Hoteles Camino Real', concepto: 'Liquidación Hospedaje Jueces Federación', descripcion: '85 habitaciones sede Monterrey', monto: 680000.00, formaPago: 'Transferencia', cuenta: 'MGO Digital', pagadoPor: 'Manu', solicitadoPor: 'Carlos', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-88102-PRES', estatus: 'Pagado' },
-      { id: 'ON-103', fecha: '2026-10-06', sedeCiudad: 'Mérida, Yuc.', hotel: 'Fiesta Americana Mérida', categoria: 'Vuelos de Jueces', proveedor: 'Aeromexico Grupos', concepto: 'Emisión 42 Boletos Jueces Nacionales', descripcion: 'Rutas CDMX-MID y GDL-MID', monto: 264500.00, formaPago: 'Tarjeta Corporativa', cuenta: 'Clari Amex', pagadoPor: 'Clarisa', solicitadoPor: 'Carlos', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: false, selloDigital: null, estatus: 'Listo para Firma Presidente' }
+      { id: 'ON-101', fecha: '2026-10-02', sedeCiudad: 'Guadalajara, Jal.', hotel: 'Hotel RIU Plaza Guadalajara', categoria: 'Hospedaje', proveedor: 'RIU Hotels & Resorts', concepto: 'Anticipo 50% Bloqueo Delegaciones y Jueces', descripcion: '220 habitaciones plan pensión completa', monto: 1250000.00, formaPago: 'Transferencia', cuenta: 'MGO Digital', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-88101-PRES', estatus: 'Pagado' },
+      { id: 'ON-102', fecha: '2026-10-04', sedeCiudad: 'Monterrey, N.L.', hotel: 'Camino Real Monterrey', categoria: 'Hospedaje', proveedor: 'Hoteles Camino Real', concepto: 'Liquidación Hospedaje Jueces Federación', descripcion: '85 habitaciones sede Monterrey', monto: 680000.00, formaPago: 'Transferencia', cuenta: 'MGO Digital', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: true, selloDigital: 'MGO-SIG-88102-PRES', estatus: 'Pagado' },
+      { id: 'ON-103', fecha: '2026-10-06', sedeCiudad: 'Mérida, Yuc.', hotel: 'Fiesta Americana Mérida', categoria: 'Vuelos de Jueces', proveedor: 'Aeromexico Grupos', concepto: 'Emisión 42 Boletos Jueces Nacionales', descripcion: 'Rutas CDMX-MID y GDL-MID', monto: 264500.00, formaPago: 'Tarjeta Corporativa', cuenta: 'Clari Amex', pagadoPor: 'MGO', solicitadoPor: 'MGO', comprobante: 'Factura', authDirOp: true, authDirGen: true, firmaPresidente: false, selloDigital: null, estatus: 'Listo para Firma Presidente' }
     ]
   }
 ];
@@ -210,11 +223,7 @@ export default function App() {
     return saved ? JSON.parse(saved) : INITIAL_EVENTS;
   });
   const [users, setUsers] = useState(() => {
-    const saved = localStorage.getItem('mgo_users_cloud_sync_v3');
-    if (saved) {
-      const parsed = JSON.parse(saved).map(({ password, ...rest }) => rest);
-      return parsed;
-    }
+    localStorage.removeItem('mgo_users_cloud_sync_v3');
     return INITIAL_USERS;
   });
   const [accounts, setAccounts] = useState(() => {
@@ -240,7 +249,7 @@ export default function App() {
   const [cloudStatus, setCloudStatus] = useState('connecting');
 
   // ==========================================================================
-  // SINCRONIZACIÓN BLINDADA: SOLO ESCUCHA DATOS CUANDO HAY USUARIO AUTENTICADO REAL
+  // SINCRONIZACIÓN BLINDADA Y PURGA AUTOMÁTICA DE USUARIOS DE PRUEBA VIEJOS
   // ==========================================================================
   useEffect(() => {
     if (!auth || !db) {
@@ -278,16 +287,41 @@ export default function App() {
         }, () => setCloudStatus('local'));
 
         const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'mgo_users');
-        unsubUsers = onSnapshot(usersRef, (snapshot) => {
-          if (!snapshot.empty) {
-            // Nunca cargamos ni almacenamos contraseñas en texto plano
-            const cloudUsers = snapshot.docs.map((d) => {
-              const { password, ...safeUser } = d.data();
-              return safeUser;
-            });
-            setUsers(cloudUsers);
-            localStorage.setItem('mgo_users_cloud_sync_v3', JSON.stringify(cloudUsers));
+        unsubUsers = onSnapshot(usersRef, async (snapshot) => {
+          const validCloudUsers = [];
+
+          for (const docSnap of snapshot.docs) {
+            const raw = docSnap.data();
+            const mail = (raw.email || '').toLowerCase();
+
+            // Si es alguno de los 5 usuarios de prueba anteriores, lo borra de Firestore automáticamente
+            if (LEGACY_TEST_EMAILS.includes(mail) || LEGACY_TEST_IDS.includes(docSnap.id)) {
+              try {
+                await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'mgo_users', docSnap.id));
+              } catch (e) {}
+              continue;
+            }
+
+            const { password, ...safeUser } = raw;
+            if (mail === 'gramirez@mgoevents.com') {
+              safeUser.rol = 'PRESIDENTE';
+              safeUser.nombre = safeUser.nombre || 'Guillermo Ramírez';
+              safeUser.cargo = safeUser.cargo || 'Presidente del Consejo';
+            }
+            validCloudUsers.push(safeUser);
           }
+
+          // Garantiza que gramirez@mgoevents.com siempre esté presente como único usuario base
+          if (!validCloudUsers.some((u) => u.email?.toLowerCase() === 'gramirez@mgoevents.com')) {
+            const adminUser = INITIAL_USERS[0];
+            validCloudUsers.unshift(adminUser);
+            try {
+              await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'mgo_users', adminUser.id), adminUser);
+            } catch (e) {}
+          }
+
+          setUsers(validCloudUsers);
+          localStorage.setItem('mgo_users_cloud_sync_v4', JSON.stringify(validCloudUsers));
         });
 
         const accRef = collection(db, 'artifacts', appId, 'public', 'data', 'mgo_accounts');
@@ -357,7 +391,7 @@ export default function App() {
     setUsers((prev) => {
       const exists = prev.some((u) => u.id === safeUserObj.id);
       const next = exists ? prev.map((u) => (u.id === safeUserObj.id ? safeUserObj : u)) : [...prev, safeUserObj];
-      localStorage.setItem('mgo_users_cloud_sync_v3', JSON.stringify(next));
+      localStorage.setItem('mgo_users_cloud_sync_v4', JSON.stringify(next));
       return next;
     });
     if (db && auth?.currentUser && !auth.currentUser.isAnonymous) {
@@ -443,16 +477,26 @@ export default function App() {
       // 1. Validación encriptada directa contra Firebase Authentication
       await signInWithEmailAndPassword(auth, cleanEmail, loginPassword);
 
-      // 2. Búsqueda de perfil y rol en el directorio MGO
+      // 2. Si es gramirez@mgoevents.com, entra siempre como Presidente
       let foundUser = users.find((u) => u.email.toLowerCase() === cleanEmail);
-      if (!foundUser) {
-        const defaultMatch = INITIAL_USERS.find((u) => u.email.toLowerCase() === cleanEmail);
-        foundUser = defaultMatch || {
+
+      if (cleanEmail === 'gramirez@mgoevents.com') {
+        foundUser = {
+          id: foundUser?.id || 'u-pres-gramirez',
+          nombre: 'Guillermo Ramírez',
+          cargo: 'Presidente del Consejo',
+          email: 'gramirez@mgoevents.com',
+          rol: 'PRESIDENTE',
+          activo: true
+        };
+        await syncUserToCloud(foundUser);
+      } else if (!foundUser) {
+        foundUser = {
           id: 'u-' + Date.now(),
           nombre: cleanEmail.split('@')[0].toUpperCase(),
           cargo: 'Ejecutivo MGO',
           email: cleanEmail,
-          rol: cleanEmail.startsWith('presidente') ? 'PRESIDENTE' : 'PROJECT_MANAGER',
+          rol: 'PROJECT_MANAGER',
           activo: true
         };
       }
@@ -502,7 +546,7 @@ export default function App() {
     setNewEvtClient('');
     setNewEvtStart('2026-11-15');
     setNewEvtEnd('2026-11-22');
-    setNewEvtResp(loggedInUser?.nombre || 'Pepe');
+    setNewEvtResp(loggedInUser?.nombre || 'Guillermo Ramírez');
     setNewCityName('');
     setNewHotelName('');
     setNewRubroName('');
@@ -621,8 +665,8 @@ export default function App() {
 
   const handleConfirmDeleteUser = async () => {
     if (!deleteUserModal || !permissions.canManageUsers) return;
-    if (deleteUserModal.id === loggedInUser.id) {
-      showToast('error', 'Acción protegida', 'No puedes eliminar tu propio usuario con sesión activa.');
+    if (deleteUserModal.id === loggedInUser.id || deleteUserModal.email.toLowerCase() === 'gramirez@mgoevents.com') {
+      showToast('error', 'Acción protegida', 'No puedes eliminar la cuenta principal de Presidencia.');
       setDeleteUserModal(null);
       return;
     }
@@ -630,7 +674,7 @@ export default function App() {
     const targetId = deleteUserModal.id;
     const remaining = users.filter((u) => u.id !== targetId);
     setUsers(remaining);
-    localStorage.setItem('mgo_users_cloud_sync_v3', JSON.stringify(remaining));
+    localStorage.setItem('mgo_users_cloud_sync_v4', JSON.stringify(remaining));
 
     if (db && auth?.currentUser && !auth.currentUser.isAnonymous) {
       try {
@@ -714,7 +758,7 @@ export default function App() {
   const [newEvtClient, setNewEvtClient] = useState('');
   const [newEvtStart, setNewEvtStart] = useState('2026-11-15');
   const [newEvtEnd, setNewEvtEnd] = useState('2026-11-22');
-  const [newEvtResp, setNewEvtResp] = useState('Pepe');
+  const [newEvtResp, setNewEvtResp] = useState('Guillermo Ramírez');
 
   const [newCityName, setNewCityName] = useState('');
   const [newHotelName, setNewHotelName] = useState('');
@@ -2924,7 +2968,7 @@ export default function App() {
               <div className="p-4 border-b border-slate-200 bg-slate-50">
                 <h3 className="font-black text-slate-900">Directorio Oficial de Usuarios y Roles (@mgoevents.com)</h3>
                 <p className="text-xs text-slate-500">
-                  Las contraseñas están blindadas mediante hash criptográfico en Firebase Auth (ningún tercero puede leerlas de la base de datos).
+                  Único usuario fundador activo: <strong>gramirez@mgoevents.com</strong>. Las contraseñas están blindadas mediante hash criptográfico en Firebase Auth.
                 </p>
               </div>
               <div className="overflow-x-auto">
@@ -2972,10 +3016,10 @@ export default function App() {
 
                             <button
                               type="button"
-                              disabled={u.id === loggedInUser.id}
+                              disabled={u.id === loggedInUser.id || u.email.toLowerCase() === 'gramirez@mgoevents.com'}
                               onClick={() => setDeleteUserModal(u)}
                               className={`px-2.5 py-1.5 rounded-lg text-xs font-bold inline-flex items-center gap-1 transition ${
-                                u.id === loggedInUser.id
+                                u.id === loggedInUser.id || u.email.toLowerCase() === 'gramirez@mgoevents.com'
                                   ? 'bg-slate-100 text-slate-300 cursor-not-allowed'
                                   : 'bg-red-50 hover:bg-red-600 hover:text-white text-red-600'
                               }`}
