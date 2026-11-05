@@ -1,0 +1,19 @@
+{
+    "name": "MGO Events ERP",
+    "short_name": "MGO ERP",
+    "description": "High Performance Sports Logistics — Control Presupuestal y Firma Digital",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#020617",
+    "theme_color": "#0D4F8B",
+    "orientation": "any",
+    "icons": [
+      {
+        "src": "/mgo-icon.svg",
+        "sizes": "any",
+        "type": "image/svg+xml",
+        "purpose": "any maskable"
+      }
+    ]
+  }
+  

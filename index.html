@@ -1,10 +1,41 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MGO Events — High Performance Sports Logistics</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>MGO Events — ERP</title>
+
+    <!-- Motor de Diseño Estético Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
+
+    <!-- Configuración de App Nativa (PWA) e Ícono Oficial MGO -->
+    <meta name="theme-color" content="#0D4F8B" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="MGO ERP" />
+    <meta name="mobile-web-app-capable" content="yes" />
+
+    <link rel="icon" type="image/svg+xml" href="/mgo-icon.svg" />
+    <link id="apple-touch-icon-link" rel="apple-touch-icon" href="/mgo-icon.svg" />
+    <link rel="manifest" href="/manifest.json" />
+
+    <script>
+      (function () {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = function () {
+          const canvas = document.createElement('canvas');
+          canvas.width = 512;
+          canvas.height = 512;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, 512, 512);
+          const pngUrl = canvas.toDataURL('image/png');
+          const appleLink = document.getElementById('apple-touch-icon-link');
+          if (appleLink) appleLink.href = pngUrl;
+        };
+        img.src = '/mgo-icon.svg';
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
